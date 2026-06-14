@@ -1,0 +1,2200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FPS-002 — DIGITAL REALITY RUN</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  :root {
+    --safe-b: env(safe-area-inset-bottom, 0px);
+    --safe-l: env(safe-area-inset-left, 0px);
+    --safe-r: env(safe-area-inset-right, 0px);
+    --ctrl-h: 184px;   /* reserved bottom control band height */
+    --hud-h: 40px;     /* slim HUD strip height (two rows + mini-bars) */
+  }
+  html,body { width:100%; height:100%; overflow:hidden; background:#0a0a12;
+    font-family:"Courier New",monospace; color:#d8ffe0; touch-action:none; user-select:none;
+    overscroll-behavior:none; }
+
+  /* The canvas dominates: it fills the area above the HUD strip + control band.
+     320x200 internal resolution preserved; CSS scales it up with pixelation. */
+  #wrap { position:fixed; left:0; right:0; top:0;
+    bottom:calc(var(--hud-h) + var(--ctrl-h) + var(--safe-b));
+    display:flex; align-items:center; justify-content:center; background:#000; }
+  canvas { image-rendering:pixelated; background:#000; display:block;
+    width:100%; height:100%; object-fit:contain; }
+  /* Desktop / no-touch: no reserved control band, canvas owns nearly everything */
+  body.notouch #wrap { bottom:calc(var(--hud-h) + var(--safe-b)); }
+
+  /* Slim HUD strip — sits directly above the control band. Rebuilt as grouped
+     flex modules (FPS000-QUALITY-006A): each row is space-between with a
+     non-shrinking right objective cluster so DRN/GATE never clip on mobile. */
+  #hud { position:fixed; left:0; right:0; pointer-events:none; z-index:6;
+    bottom:calc(var(--ctrl-h) + var(--safe-b));
+    height:var(--hud-h); overflow:hidden;
+    font-size:11px; line-height:1.3; padding:2px 6px;
+    background:rgba(2,6,10,.82); border-top:1px solid rgba(40,120,80,.35);
+    text-shadow:0 0 3px #0f0; letter-spacing:.3px; white-space:nowrap; }
+  body.notouch #hud { bottom:calc(var(--safe-b)); }
+  #hud .row { display:flex; flex-wrap:nowrap; align-items:center;
+    justify-content:space-between; gap:0 6px; overflow:hidden; }
+  #hud .grp { display:inline-flex; align-items:center; gap:0 6px; min-width:0; }
+  #hud .grp.right { flex-shrink:0; }            /* objectives never clip */
+  #hud .grp.mid  { flex-shrink:1; overflow:hidden; text-overflow:ellipsis; }
+  #hud .grp.loc  { flex-shrink:1; min-width:0; overflow:hidden;
+    text-overflow:ellipsis; color:#9fb8aa; }
+  #hud b { color:#7fffd4; }
+  #hud .warn { color:#ff5b5b; }
+  #hud .ok { color:#9dff6e; }
+  #hud .stat { display:inline-flex; align-items:center; gap:4px; }
+  #hud .bar { display:inline-block; width:40px; height:7px; border-radius:2px;
+    background:rgba(255,255,255,.12); overflow:hidden; vertical-align:middle;
+    box-shadow:inset 0 0 0 1px rgba(255,255,255,.12); flex-shrink:0; }
+  #hud .bar > i { display:block; height:100%; width:0%; }
+  #hud .lbl { color:#9fb8aa; }
+  #hud .val { min-width:26px; display:inline-block; }
+  /* objective chips: compact rounded modules */
+  #hud .chip { display:inline-flex; align-items:center; gap:3px; flex-shrink:0;
+    font-size:10px; font-weight:bold; padding:1px 5px; border-radius:8px;
+    background:rgba(255,255,255,.06); box-shadow:inset 0 0 0 1px rgba(255,255,255,.10);
+    letter-spacing:.2px; }
+  #hud .chip.on  { color:#ff9a3c; box-shadow:inset 0 0 0 1px rgba(255,154,60,.5); }
+  #hud .chip.off { color:#9dff6e; box-shadow:inset 0 0 0 1px rgba(157,255,110,.45); }
+  /* narrow phones: tighten chips so the right cluster always fits */
+  @media (max-width:360px){
+    #hud { font-size:10px; padding:2px 4px; }
+    #hud .chip { font-size:9px; padding:1px 4px; }
+    #hud .bar { width:34px; }
+  }
+  #prompt { position:fixed; left:50%; top:54%; transform:translateX(-50%);
+    background:rgba(0,30,20,.8); border:1px solid #2fff9f; padding:3px 9px;
+    font-size:13px; display:none; z-index:7; pointer-events:none; border-radius:3px; }
+  /* Sector-clear stats card (FPS000-QUALITY-006A) */
+  #clearStats { display:grid; grid-template-columns:auto auto; gap:3px 18px;
+    margin:10px auto 4px; max-width:300px; font-size:12px; text-align:left;
+    background:rgba(8,22,16,.6); border:1px solid #1f6f4f; padding:10px 14px;
+    border-radius:6px; }
+  #clearStats .k { color:#8fd6a8; }
+  #clearStats .v { color:#eafff0; text-align:right; font-weight:bold; }
+
+  /* ---- Bottom control band (touch) ---- */
+  #touch { position:fixed; left:0; right:0; bottom:0; z-index:8; display:none;
+    height:calc(var(--ctrl-h) + var(--safe-b));
+    padding:0 var(--safe-r) var(--safe-b) var(--safe-l); }
+
+  .btn { position:absolute; width:56px; height:56px; border-radius:50%;
+    background:rgba(20,40,30,.6); border:2px solid rgba(120,255,180,.6);
+    color:#d8ffe0; font-size:18px; font-weight:bold; display:flex;
+    align-items:center; justify-content:center; touch-action:none; }
+  .btn:active,.btn.on { background:rgba(60,180,120,.85); border-color:#bfffe0; }
+
+  /* Left-thumb D-pad — traditional directional cross.
+     Three columns / three rows of 48px cells; the four arms are buttons,
+     the center is inert. Adjacent arms can be held together for diagonals
+     (forward + turn). */
+  #dpad { position:absolute; left:20px; bottom:20px; width:150px; height:150px; }
+  #dpad .dbtn { position:absolute; width:50px; height:50px; border-radius:10px;
+    background:rgba(22,44,32,.7); border:2px solid rgba(120,255,180,.55);
+    color:#cfe; font-size:18px; display:flex; align-items:center; justify-content:center;
+    touch-action:none; }
+  #dpad .dbtn:active,#dpad .dbtn.on { background:rgba(60,180,120,.9); border-color:#bfffe0; }
+  #dpad [data-k="up"]    { left:50px; top:0; }
+  #dpad [data-k="left"]  { left:0;   top:50px; }
+  #dpad [data-k="right"] { left:100px;top:50px; }
+  #dpad [data-k="down"]  { left:50px; top:100px; }
+  /* inert center hub for the classic cross look */
+  #dpad .hub { position:absolute; left:50px; top:50px; width:50px; height:50px;
+    background:rgba(22,44,32,.7); border:2px solid rgba(120,255,180,.3);
+    pointer-events:none; }
+
+  /* Right-thumb face diamond — compact, reads as one cluster: Y / X B / A */
+  #face { position:absolute; right:20px; bottom:20px; width:150px; height:150px; }
+  #face .btn[data-k="y"] { left:50px; top:0; }
+  #face .btn[data-k="x"] { left:6px;  top:47px; }
+  #face .btn[data-k="b"] { left:94px; top:47px; }
+  #face .btn[data-k="a"] { left:50px; top:94px; }
+
+  /* SELECT / START — small system pills, centered in the gap between the
+     two thumb clusters. Smaller than the face buttons; overlap nothing. */
+  #sys { position:absolute; left:50%; bottom:46px; transform:translateX(-50%);
+    display:flex; gap:10px; }
+  #sys .btn { position:relative; width:auto; min-width:50px; height:26px;
+    border-radius:13px; padding:0 10px; font-size:11px; font-weight:bold;
+    background:rgba(18,34,26,.75); border:2px solid rgba(120,255,180,.5); }
+
+  /* Narrow phones: shrink clusters a touch, keep labels readable */
+  @media (max-width:360px){
+    :root { --ctrl-h:170px; }
+    #dpad { width:132px; height:132px; left:14px; }
+    #dpad .dbtn { width:44px; height:44px; font-size:16px; }
+    #dpad [data-k="up"]{left:44px;top:0;} #dpad [data-k="left"]{left:0;top:44px;}
+    #dpad [data-k="right"]{left:88px;top:44px;} #dpad [data-k="down"]{left:44px;top:88px;}
+    #dpad .hub{left:44px;top:44px;width:44px;height:44px;}
+    #face { width:138px; height:138px; right:14px; }
+    #face .btn { width:50px; height:50px; font-size:16px; }
+    #face .btn[data-k="y"]{left:44px;top:0;} #face .btn[data-k="x"]{left:4px;top:44px;}
+    #face .btn[data-k="b"]{left:84px;top:44px;} #face .btn[data-k="a"]{left:44px;top:88px;}
+  }
+  /* Landscape phones: lower band, push clusters to outer corners */
+  @media (max-height:480px) and (orientation:landscape){
+    :root { --ctrl-h:138px; --hud-h:24px; }
+    #dpad { width:120px; height:120px; left:12px; bottom:12px; }
+    #dpad .dbtn { width:40px; height:40px; }
+    #dpad [data-k="up"]{left:40px;top:0;} #dpad [data-k="left"]{left:0;top:40px;}
+    #dpad [data-k="right"]{left:80px;top:40px;} #dpad [data-k="down"]{left:40px;top:80px;}
+    #dpad .hub{left:40px;top:40px;width:40px;height:40px;}
+    #face { width:120px; height:120px; right:12px; bottom:12px; }
+    #face .btn { width:46px; height:46px; }
+    #face .btn[data-k="y"]{left:37px;top:0;} #face .btn[data-k="x"]{left:0;top:37px;}
+    #face .btn[data-k="b"]{left:74px;top:37px;} #face .btn[data-k="a"]{left:37px;top:74px;}
+    #sys { bottom:14px; }
+  }
+
+  /* Screens */
+  .screen { position:fixed; inset:0; z-index:20; display:flex; flex-direction:column;
+    align-items:center; justify-content:center; text-align:center; padding:24px;
+    background:rgba(3,8,12,.94); }
+  .screen h1 { font-size:26px; color:#7fffd4; text-shadow:0 0 8px #0f8; margin-bottom:4px; letter-spacing:2px; }
+  .screen h2 { font-size:16px; color:#9dff6e; margin-bottom:14px; }
+  .screen p { font-size:13px; max-width:460px; line-height:1.7; margin-bottom:10px; color:#bfeccd; }
+  .screen .ctrls { font-size:12px; color:#8fd6a8; text-align:left; max-width:420px;
+    background:rgba(10,24,18,.6); border:1px solid #1f6f4f; padding:10px 14px; margin:8px 0; }
+  .screen button { font-family:inherit; font-size:16px; padding:10px 22px; margin-top:10px;
+    background:#0c3; color:#021; border:none; border-radius:6px; font-weight:bold; cursor:pointer;
+    letter-spacing:1px; }
+  .screen button:active { background:#0a0; }
+  .hidden { display:none !important; }
+  .small { font-size:11px; color:#6fae88; margin-top:8px; }
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="320" height="200"></canvas></div>
+
+<div id="hud">
+  <div class="row" id="hudTop"></div>
+  <div class="row" id="hudBot"></div>
+</div>
+<div id="prompt"></div>
+
+<div id="touch">
+  <div id="dpad">
+    <div class="hub"></div>
+    <div class="dbtn" data-k="up">▲</div>
+    <div class="dbtn" data-k="left">◀</div>
+    <div class="dbtn" data-k="right">▶</div>
+    <div class="dbtn" data-k="down">▼</div>
+  </div>
+  <div id="face">
+    <div class="btn" data-k="y">Y</div>
+    <div class="btn" data-k="x">X</div>
+    <div class="btn" data-k="b">B</div>
+    <div class="btn" data-k="a">A</div>
+  </div>
+  <div id="sys">
+    <div class="btn" data-k="select">SEL</div>
+    <div class="btn" data-k="start">START</div>
+  </div>
+</div>
+
+<div id="titleScreen" class="screen">
+  <h1>FPS-002</h1>
+  <h2>DIGITAL REALITY RUN</h2>
+  <p>You are moving through a digital reconstruction of reality — real rooms
+     rebuilt from system memory and held together by a hostile command signal.
+     Cut the signal: collapse the Automaton's command network and its Replicator
+     Stations until the Signal Gate validates, then advance to the next sector.</p>
+  <div class="ctrls">
+    <b>PHONE</b> &nbsp;Left D-pad: ▲ forward / ▼ back / ◀▶ turn · Right A/B/X/Y · SEL cycle · START pause/resume<br><br>
+    <b>KEYBOARD</b><br>
+    W/↑ forward · S/↓ back · A/← turn left · D/→ turn right<br>
+    U strafe left · I strafe right · J/Space = A (fire · open door · enter Signal Gate)<br>
+    K = B (Signal Baton — cut signal · pick up) · Tab = Select (cycle weapon)<br>
+    Enter/P = Start (pause/resume) · R = restart sector
+  </div>
+  <p class="small">Automatons only. No L/R, no triggers, no mouse-look.</p>
+  <button id="startBtn">BEGIN</button>
+</div>
+
+<div id="overScreen" class="screen hidden">
+  <h1 id="overTitle">SECTOR FAILED</h1>
+  <h2 id="overSub"></h2>
+  <div id="clearStats" class="hidden"></div>
+  <button id="overBtn">RETRY SECTOR</button>
+</div>
+
+<div id="winScreen" class="screen hidden">
+  <h1>SYSTEM CLEARED</h1>
+  <h2>All three Automatons shut down.</h2>
+  <p id="winStats"></p>
+  <button id="winBtn">RUN AGAIN</button>
+</div>
+
+<div id="pauseScreen" class="screen hidden">
+  <h1>PAUSED</h1>
+  <p class="small">Press START (or Enter / P) to resume.</p>
+  <button id="resumeBtn">RESUME</button>
+</div>
+
+<script>
+"use strict";
+(function(){
+
+/* ============================================================
+   FPS-002  — DIGITAL REALITY RUN — single-file raycaster
+   Run through a digital reconstruction of reality; cut the command signal.
+   No external dependencies. Canvas 2D raycaster.
+   ============================================================ */
+
+const W = 320, H = 200;
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+ctx.imageSmoothingEnabled = false;
+
+/* ---------- normalized input state (Input Architecture Standard) ----------
+   Three raw source layers (keyboard, touch, gamepad) are kept separately and
+   OR'd into `input` every frame. This guarantees no source can leave a stuck
+   button, and movement+action work simultaneously from any source.            */
+const KEYS=['up','down','left','right','a','b','x','y','start','select','r'];
+function freshLayer(){ const o={}; KEYS.forEach(k=>o[k]=false); return o; }
+const kbd=freshLayer(), touch=freshLayer(), pad=freshLayer();
+
+const input = {
+  up:false, down:false, left:false, right:false,
+  a:false, b:false, x:false, y:false, start:false, select:false, r:false,
+  justPressed:{ a:false, b:false, x:false, y:false, start:false, select:false, r:false }
+};
+const prevBtn = { a:false,b:false,x:false,y:false,start:false,select:false,r:false };
+
+function composeInput(){
+  for(const k of KEYS) input[k] = kbd[k] || touch[k] || pad[k];
+  const edge=['a','b','x','y','start','select','r'];
+  for(const k of edge){ input.justPressed[k] = input[k] && !prevBtn[k]; prevBtn[k]=input[k]; }
+}
+
+/* ---------- keyboard layer ---------- */
+const keyMap = {
+  'KeyW':'up','ArrowUp':'up','KeyS':'down','ArrowDown':'down',
+  'KeyA':'left','ArrowLeft':'left','KeyD':'right','ArrowRight':'right',
+  'KeyJ':'a','Space':'a','KeyK':'b','KeyU':'x','KeyI':'y',
+  'KeyQ':'x','KeyE':'y','Tab':'select','Enter':'start','KeyP':'start','KeyR':'r'
+};
+addEventListener('keydown',e=>{
+  const m=keyMap[e.code];
+  if(m){ if(e.code==='Tab'||e.code==='Space') e.preventDefault(); kbd[m]=true; }
+});
+addEventListener('keyup',e=>{ const m=keyMap[e.code]; if(m) kbd[m]=false; });
+
+function clearAll(){ for(const k of KEYS){ kbd[k]=false; touch[k]=false; pad[k]=false; }
+  if(typeof clearTouchControls==='function') clearTouchControls(); }
+addEventListener('blur',clearAll);
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) clearAll(); });
+
+/* ---------- touch layer (pointer events) ----------
+   Two independent touch surfaces:
+     - face/sys buttons: each tracks its own pointerId so multi-touch
+       (move + strafe + shoot) never clobbers another button.
+     - the D-pad arrows are ordinary held buttons too; pressing two adjacent
+       arrows (separate fingers, or a thumb spanning two hit zones) yields the
+       diagonal intent (e.g. forward + turn), which the movement code already
+       normalizes.
+   All paths clear on pointerup / pointercancel / lostpointercapture / blur /
+   visibilitychange / pause / restart. */
+const touchEl = document.getElementById('touch');
+function isTouch(){ return ('ontouchstart' in window) || navigator.maxTouchPoints>0; }
+
+const btnPointer = {};   // data-k -> pointerId currently holding it
+
+function clearTouchControls(){
+  for(const k of ['a','b','x','y','start','select','up','down','left','right']) touch[k]=false;
+  touchEl.querySelectorAll('.btn,.dbtn').forEach(b=>b.classList.remove('on'));
+  for(const k in btnPointer) delete btnPointer[k];
+}
+
+function bindTouch(){
+  // All touch controls (D-pad arrows, A/B/X/Y, SEL/START) are held buttons.
+  // Each tracks its own pointerId so multi-touch never clobbers another.
+  touchEl.querySelectorAll('.btn,.dbtn').forEach(btn=>{
+    const k = btn.getAttribute('data-k');
+    if(!k) return; // skip the inert hub
+    btn.addEventListener('pointerdown',e=>{ e.preventDefault();
+      btnPointer[k]=e.pointerId; touch[k]=true; btn.classList.add('on');
+      if(btn.setPointerCapture) try{ btn.setPointerCapture(e.pointerId); }catch(_){}
+    });
+    const up=e=>{ if(btnPointer[k]===e.pointerId || e.type==='pointercancel'){ delete btnPointer[k]; touch[k]=false; btn.classList.remove('on'); } };
+    btn.addEventListener('pointerup',up);
+    btn.addEventListener('pointercancel',up);
+    btn.addEventListener('lostpointercapture',up);
+  });
+}
+// block page scroll/zoom during play
+document.addEventListener('touchmove',e=>{ e.preventDefault(); },{passive:false});
+
+/* ---------- gamepad layer ---------- */
+function pollGamepad(){
+  for(const k of KEYS) pad[k]=false;
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const gp = pads && pads[0];
+  if(!gp) return;
+  const dz=0.35;
+  const ax0=gp.axes[0]||0, ax1=gp.axes[1]||0;
+  const pressed=i=>gp.buttons[i]&&gp.buttons[i].pressed;
+  if(pressed(12)||ax1<-dz) pad.up=true;
+  if(pressed(13)||ax1>dz) pad.down=true;
+  if(pressed(14)||ax0<-dz) pad.left=true;
+  if(pressed(15)||ax0>dz) pad.right=true;
+  if(pressed(0)) pad.a=true;   // south
+  if(pressed(1)) pad.b=true;   // east
+  if(pressed(2)) pad.x=true;   // west
+  if(pressed(3)) pad.y=true;   // north
+  if(pressed(9)) pad.start=true;
+  if(pressed(8)) pad.select=true;
+}
+
+/* ============================================================
+   SECTOR GENERATOR  (authored modular templates, not noise)
+   Builds a connected room-and-corridor layout on a coarse zone grid,
+   guarantees connectivity with a spanning tree (+ a few service loops),
+   then places objectives on verified reachable floor. Falls back to the
+   hand-authored static map if generation can't be verified.
+   Controls, weapons, enemy rules, and Signal Gate logic are untouched —
+   this only changes the floor plan and where validated entities sit.
+   ============================================================ */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function carveRoom(grid, x0,y0,x1,y1){
+  for(let y=y0;y<=y1;y++) for(let x=x0;x<=x1;x++){ if(grid[y]&&grid[y][x]!==undefined) grid[y][x]='.'; }
+}
+function carveH(grid,y,x0,x1){ for(let x=Math.min(x0,x1);x<=Math.max(x0,x1);x++) if(grid[y]) grid[y][x]='.'; }
+function carveV(grid,x,y0,y1){ for(let y=Math.min(y0,y1);y<=Math.max(y0,y1);y++) if(grid[y]) grid[y][x]='.'; }
+
+function generateSector(idx, name, counts, seed){
+  const W=14,H=10;
+  const rnd = mulberry32((seed>>>0) ^ (idx*2654435761>>>0));
+  const ri=(a,b)=>a+((rnd()*(b-a+1))|0);
+  const pick=arr=>arr[(rnd()*arr.length)|0];
+
+  const zoneCols=3, zoneRows=2;
+  const zw=Math.floor((W-2)/zoneCols);  // ~4
+  const zh=Math.floor((H-2)/zoneRows);  // ~4
+  function zoneRect(zx,zy){
+    const x0=1+zx*zw, y0=1+zy*zh;
+    const x1=Math.min(W-2, x0+zw-1), y1=Math.min(H-2, y0+zh-1);
+    return {x0,y0,x1,y1, cx:(x0+x1)>>1, cy:(y0+y1)>>1};
+  }
+
+  const grid=[]; for(let y=0;y<H;y++){ grid.push(new Array(W).fill('#')); }
+
+  const zones=[];
+  for(let zy=0;zy<zoneRows;zy++) for(let zx=0;zx<zoneCols;zx++){
+    const z=zoneRect(zx,zy); z.zx=zx; z.zy=zy; zones.push(z);
+    const tmpl=pick(['room','room','inset','corridor']);
+    if(tmpl==='room'){ carveRoom(grid, z.x0,z.y0,z.x1,z.y1); }
+    else if(tmpl==='inset'){ carveRoom(grid, z.x0,z.y0,z.x1,z.y1);
+      if((z.x1-z.x0)>=2 && (z.y1-z.y0)>=2){ grid[z.cy][z.cx]='#'; } }  // pillar / side-chamber feel
+    else { const horiz=rnd()<0.5;
+      if(horiz) carveH(grid, z.cy, z.x0, z.x1); else carveV(grid, z.cx, z.y0, z.y1); }
+  }
+
+  const idxOf=(zx,zy)=>zy*zoneCols+zx;
+  const connected=new Set([0]);
+  const edges=[];
+  const adj=[];
+  for(let zy=0;zy<zoneRows;zy++) for(let zx=0;zx<zoneCols;zx++){
+    if(zx+1<zoneCols) adj.push([idxOf(zx,zy),idxOf(zx+1,zy)]);
+    if(zy+1<zoneRows) adj.push([idxOf(zx,zy),idxOf(zx,zy+1)]);
+  }
+  const remaining=adj.slice();
+  let guard=0;
+  while(connected.size<zones.length && guard++<50){
+    const frontier=remaining.filter(([a,b])=>connected.has(a)!==connected.has(b));
+    if(frontier.length===0) break;
+    const e=pick(frontier); edges.push(e); connected.add(e[0]); connected.add(e[1]);
+  }
+  const loops=ri(1,2);
+  for(let i=0;i<loops;i++){ const e=pick(adj); if(!edges.includes(e)) edges.push(e); }
+
+  for(const [a,b] of edges){
+    const za=zones[a], zb=zones[b];
+    carveH(grid, za.cy, za.cx, zb.cx);
+    carveV(grid, zb.cx, za.cy, zb.cy);
+  }
+
+  // doors on corridor pinch points (2..5). A pinch = a 1-wide passage cell.
+  const doors=[];
+  const doorTarget=Math.max(2,Math.min(5,counts.doors||3));
+  const isFloor=(x,y)=> x>=0&&y>=0&&x<W&&y<H && grid[y][x]==='.';
+  const doorCandidates=[];
+  for(let y=1;y<H-1;y++) for(let x=1;x<W-1;x++){
+    if(grid[y][x]!=='.') continue;
+    // vertical passage: walls left+right, floor up+down  (or vice versa)
+    const ns = !isFloor(x-1,y) && !isFloor(x+1,y) && isFloor(x,y-1) && isFloor(x,y+1);
+    const ew = !isFloor(x,y-1) && !isFloor(x,y+1) && isFloor(x-1,y) && isFloor(x+1,y);
+    if(ns||ew) doorCandidates.push([x,y]);
+  }
+  for(let i=doorCandidates.length-1;i>0;i--){ const j=(rnd()*(i+1))|0; [doorCandidates[i],doorCandidates[j]]=[doorCandidates[j],doorCandidates[i]]; }
+  for(let i=0;i<doorCandidates.length && doors.length<doorTarget;i++){
+    const [x,y]=doorCandidates[i];
+    if(doors.some(d=>Math.abs(d.x-x)+Math.abs(d.y-y)<=1)) continue;
+    grid[y][x]='D'; doors.push({x,y,open:0,opening:false});
+  }
+  // Door rule is a hard constraint: if we couldn't place at least 2 real
+  // corridor doors, reject this layout and let buildSector regenerate.
+  if(doors.length < 2) return null;
+
+  function reachableFrom(sx,sy){
+    const seen=new Set(); const key=(x,y)=>x+','+y; const st=[[sx,sy]];
+    while(st.length){ const [x,y]=st.pop(); if(seen.has(key(x,y)))continue;
+      if(x<0||y<0||x>=W||y>=H) continue; if(grid[y][x]==='#') continue;
+      seen.add(key(x,y)); st.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]); }
+    return seen;
+  }
+  let spawn=null;
+  for(const z of zones){ for(let y=z.y0;y<=z.y1&&!spawn;y++) for(let x=z.x0;x<=z.x1&&!spawn;x++) if(grid[y][x]==='.') spawn={x,y}; if(spawn)break; }
+  if(!spawn) return null;
+  const reach=reachableFrom(spawn.x,spawn.y);
+  const reachList=[...reach].map(s=>s.split(',').map(Number)).filter(([x,y])=>grid[y][x]==='.');
+  if(reachList.length < 30) return null;
+
+  const used=[];
+  function farReachableCell(minDistFrom){
+    let best=null, bestScore=-1;
+    for(let tries=0;tries<60;tries++){
+      const [x,y]=reachList[(rnd()*reachList.length)|0];
+      const dSpawn=Math.hypot(x-spawn.x,y-spawn.y);
+      let dMin=Infinity; for(const u of used) dMin=Math.min(dMin,Math.hypot(x-u.x,y-u.y));
+      const score=Math.min(dSpawn, dMin===Infinity?dSpawn:dMin);
+      if(score>bestScore && (minDistFrom===undefined || score>=minDistFrom)){ bestScore=score; best={x,y}; }
+    }
+    if(!best){ const [x,y]=reachList[(rnd()*reachList.length)|0]; best={x,y}; }
+    used.push(best); return {x:best.x+0.5,y:best.y+0.5};
+  }
+
+  const automaton=farReachableCell(4);
+  const stations=[]; for(let i=0;i<counts.stations;i++) stations.push(farReachableCell(2.5));
+  const gate=farReachableCell(4);
+  const items=[];
+  const itemPool=['ammo_pistol','ammo_rifle','battery','health','armor'];
+  const itemCount=ri(6,9);
+  for(let i=0;i<itemCount;i++){ const c=farReachableCell(1.2); items.push({type:pick(itemPool),x:c.x,y:c.y,taken:false}); }
+  items.push({type:'stim',x:gate.x,y:gate.y,taken:false});
+
+  const level={ name, purpose:'', grid, w:W, h:H,
+    spawn:{x:spawn.x+0.5,y:spawn.y+0.5}, spawnDir:0, doors,
+    weaponPickups:[], items,
+    automaton, stationDefs:stations, gateDef:gate,
+    generated:true, seed };
+
+  const r2=reachableFrom(spawn.x,spawn.y);
+  const ok=(o)=> r2.has((o.x|0)+','+(o.y|0)) && grid[o.y|0][o.x|0]!=='#';
+  if(!ok(automaton) || !ok(gate) || !stations.every(ok)) return null;
+  return level;
+}
+
+function buildSector(idx){
+  const meta=[
+    {name:'SECTOR 1 — SIGNAL MAINTENANCE BAY', stations:2, doors:3},
+    {name:'SECTOR 2 — STORAGE DECK',     stations:3, doors:4},
+    {name:'SECTOR 3 — REACTOR NODE',     stations:4, doors:4},
+  ][idx] || {name:'SECTOR '+(idx+1), stations:2+(idx%3), doors:3};
+  for(let attempt=0;attempt<16;attempt++){
+    const seed=((Date.now()>>>0) ^ (idx*101+attempt*7919) ^ ((Math.random()*1e9)>>>0))>>>0;
+    const lv=generateSector(idx, meta.name, meta, seed);
+    if(lv) return lv;
+  }
+  return cloneStatic(idx);
+}
+function cloneStatic(idx){
+  const src=LEVELS[idx];
+  return { name:src.name, purpose:src.purpose,
+    grid:src.grid.map(r=>r.slice()), w:src.w, h:src.h,
+    spawn:{x:src.spawn.x,y:src.spawn.y}, spawnDir:src.spawnDir,
+    doors:src.doors.map(d=>({x:d.x,y:d.y,open:0,opening:false})),
+    weaponPickups:[],
+    items:src.items.map(it=>({type:it.type,x:it.x,y:it.y,taken:false})),
+    automaton:{x:src.automaton.x,y:src.automaton.y},
+    stationDefs:src.stationDefs.map(s=>({x:s.x,y:s.y})),
+    gateDef:src.gateDef?{x:src.gateDef.x,y:src.gateDef.y}:null,
+    generated:false };
+}
+
+/* ============================================================
+   LEVEL DATA (declarative)
+   map: rows of chars.  # wall  . floor  D door  S spawn
+   ============================================================ */
+function makeLevel(def){
+  const grid = def.map.map(r=>r.split(''));
+  const h=grid.length, w=grid[0].length;
+  let spawn={x:1.5,y:1.5}, spawnDir=0;
+  const doors=[];
+  for(let y=0;y<h;y++) for(let x=0;x<w;x++){
+    const ch=grid[y][x];
+    if(ch==='S'){ spawn={x:x+0.5,y:y+0.5}; grid[y][x]='.'; }
+    if(ch==='D'){ doors.push({x,y,open:0,opening:false}); }
+  }
+  return { name:def.name, purpose:def.purpose, grid, w, h,
+    spawn, spawnDir:def.dir||0, doors,
+    weaponPickups:def.weapons||[], items:def.items||[],
+    automaton:def.automaton, stationDefs:def.stations||[], gateDef:def.gate||null };
+}
+
+const LEVELS = [
+  makeLevel({
+    name:"SECTOR 1 — SIGNAL MAINTENANCE BAY",
+    purpose:"Movement, turning, cutting signal, doors, Signal Gate.",
+    dir: 0,
+    map:[
+      "############",
+      "#S....#....#",
+      "#.....#....#",
+      "#.....D....#",
+      "#.....#....#",
+      "#.....#....#",
+      "#..........#",
+      "#....A.....#",
+      "############",
+    ],
+    automaton:{x:5.5,y:7.5},
+    stations:[ {x:9.5,y:6.5}, {x:2.5,y:3.5} ],
+    gate:{x:10.5,y:1.5},
+    items:[ {type:'health',x:2.5,y:5.5},
+            {type:'ammo_pistol',x:9.5,y:2.5}, {type:'ammo_pistol',x:3.5,y:1.5},
+            {type:'ammo_rifle',x:8.5,y:4.5}, {type:'ammo_rifle',x:1.5,y:6.5},
+            {type:'battery',x:9.5,y:5.5}, {type:'ammo_pistol',x:7.5,y:6.5} ],
+  }),
+  makeLevel({
+    name:"SECTOR 2 — STORAGE DECK",
+    purpose:"Pickups, rifle, armor, ammo conservation.",
+    dir: 0,
+    map:[
+      "##############",
+      "#S...#...#...#",
+      "#....#...#...#",
+      "#....D...#...#",
+      "#....#...#...#",
+      "#..#.#.#.#.#.#",
+      "#............#",
+      "#..#.#.#.#.#.#",
+      "#....#..A....#",
+      "##############",
+    ],
+    automaton:{x:8.5,y:8.5},
+    stations:[ {x:11.5,y:2.5}, {x:2.5,y:1.5}, {x:8.5,y:6.5} ],
+    gate:{x:12.5,y:6.5},
+    weapons:[ {type:'rifle',x:6.5,y:3.5,taken:false} ],
+    items:[ {type:'armor',x:2.5,y:8.5}, {type:'health_ifak',x:11.5,y:1.5},
+            {type:'ammo_rifle',x:10.5,y:6.5}, {type:'ammo_pistol',x:3.5,y:6.5},
+            {type:'ammo_rifle',x:1.5,y:6.5}, {type:'ammo_rifle',x:12.5,y:8.5},
+            {type:'ammo_pistol',x:7.5,y:1.5}, {type:'battery',x:11.5,y:8.5},
+            {type:'battery',x:6.5,y:6.5}, {type:'ammo_pistol',x:12.5,y:3.5} ],
+  }),
+  makeLevel({
+    name:"SECTOR 3 — REACTOR ARCADE NODE",
+    purpose:"Burst charge weapon, batteries, boss pressure.",
+    dir: 0,
+    map:[
+      "##############",
+      "#S...........#",
+      "#.##.####.##.#",
+      "#.#........#.#",
+      "#.#.#####..#.#",
+      "#...#.AA....##",
+      "#.#.#.AA.#.#.#",
+      "#.#.#....#.#.#",
+      "#.....##.....#",
+      "##############",
+    ],
+    automaton:{x:6.5,y:5.5},
+    stations:[ {x:1.5,y:3.5}, {x:12.5,y:3.5}, {x:3.5,y:8.5}, {x:9.5,y:8.5} ],
+    gate:{x:6.5,y:1.5},
+    weapons:[ {type:'burst',x:2.5,y:8.5,taken:false} ],
+    items:[ {type:'battery',x:9.5,y:3.5}, {type:'battery',x:4.5,y:8.5},
+            {type:'health',x:1.5,y:5.5}, {type:'armor',x:11.5,y:8.5},
+            {type:'stim',x:12.5,y:1.5}, {type:'recon',x:1.5,y:1.5},
+            {type:'battery',x:1.5,y:8.5}, {type:'battery',x:11.5,y:5.5},
+            {type:'ammo_rifle',x:5.5,y:1.5}, {type:'ammo_rifle',x:10.5,y:8.5},
+            {type:'ammo_pistol',x:8.5,y:1.5}, {type:'ammo_pistol',x:3.5,y:8.5} ],
+  }),
+];
+
+/* ============================================================
+   WEAPONS
+   ============================================================ */
+const WEAPONS = {
+  pistol:{ name:"PISTOL", clip:12, max:12, ammo:12, fireDelay:0.21, dmg:34, spread:0, pellets:1, energy:false },
+  rifle:{ name:"RIFLE", clip:30, max:30, ammo:0, fireDelay:0.08, dmg:22, spread:0.03, pellets:1, energy:false },
+  burst:{ name:"BURST CHARGE", clip:100, max:100, ammo:0, fireDelay:0.45, dmg:14, spread:0.22, pellets:8, energy:true,
+          burstCostPct:18, rechargeTime:3 },
+};
+
+/* ============================================================
+   GAME STATE
+   ============================================================ */
+const G = {
+  state:'title', // title, play, pause, over, win
+  levelIndex:0, level:null,
+  px:0, py:0, dir:0,
+  health:100, armor:0,
+  weapons:[], curWeapon:0, owned:{},
+  fireCooldown:0, recharge:0,
+  drones:[], boss:null, stations:[], gate:null, signalCut:false, spawnTimer:10, maxDrones:6,
+  props:[],   // FPS000-VISUAL-003 decorative props (display-only)
+  shots:[], // visual tracers/particles
+  muzzle:0,
+  startTime:0, totalTime:0, strainless:0,
+  promptText:'',
+  punchCd:0,
+  // FPS000-QUALITY-006A: per-sector stats. DISPLAY ONLY — never read by any
+  // gameplay rule; reset each startLevel(); incremented from existing events.
+  stats:{ shots:0, hits:0, dronesKilled:0, dronesCollapsed:0, stationsCut:0, dmgTaken:0 },
+};
+
+const MOVE_SPEED = 3.3;       // tiles/sec  (was 2.6 — faster arcade feel)
+const TURN_SPEED = 2.8;       // rad/sec — more responsive pivot, still not twitch (was 2.1)
+const STRAFE_SPEED = 2.8;     // (was 2.1)
+const PLAYER_RADIUS = 0.22;
+
+function cellSolid(level, mx, my){
+  if(mx<0||my<0||mx>=level.w||my>=level.h) return true;
+  const ch = level.grid[my][mx];
+  if(ch==='#') return true;
+  if(ch==='D'){
+    const d = level.doors.find(d=>d.x===mx&&d.y===my);
+    return d ? d.open < 0.95 : true;
+  }
+  return false;
+}
+
+/* ============================================================
+   LEVEL REACHABILITY VALIDATOR  (LOCKED RULE)
+   Every player spawn, Automaton, drone spawn candidate, weapon pickup,
+   ammo/health/armor pickup, door, and interactable must be inside the map,
+   on valid reachable floor, and not inside a wall. The validator:
+     1. flood-fills walkable floor from the player spawn (doors count as
+        passable so door routes are valid),
+     2. confirms the Automaton tile is in that reachable set,
+     3. confirms every pickup/weapon tile is reachable floor,
+     4. logs a clear console.warn for any violation and AUTO-RELOCATES the
+        offending entity to the nearest reachable floor tile so the build
+        never ships an unreachable required target.
+   Runs once per level (cached) at level start.
+   ============================================================ */
+function buildReachable(level){
+  // flood fill from spawn over non-wall cells; doors are passable for routing
+  const seen = new Set();
+  const key = (x,y)=>x+','+y;
+  const walk = (x,y)=>{
+    if(x<0||y<0||x>=level.w||y>=level.h) return false;
+    return level.grid[y][x] !== '#';   // '.', 'D', (S/A already converted to '.')
+  };
+  const start = [level.spawn.x|0, level.spawn.y|0];
+  const stack = [start];
+  while(stack.length){
+    const [x,y] = stack.pop();
+    if(seen.has(key(x,y))) continue;
+    if(!walk(x,y)) continue;
+    seen.add(key(x,y));
+    stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+  }
+  return seen;
+}
+function nearestReachableCell(level, reachable, tx, ty){
+  // BFS outward from (tx,ty) to the closest cell in the reachable set
+  const key=(x,y)=>x+','+y;
+  const q=[[tx|0,ty|0]]; const seen=new Set([key(tx|0,ty|0)]);
+  while(q.length){
+    const [x,y]=q.shift();
+    if(reachable.has(key(x,y))) return {x:x+0.5,y:y+0.5};
+    for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
+      const nx=x+dx, ny=y+dy;
+      if(nx<0||ny<0||nx>=level.w||ny>=level.h) continue;
+      if(seen.has(key(nx,ny))) continue;
+      seen.add(key(nx,ny)); q.push([nx,ny]);
+    }
+  }
+  return {x:tx,y:ty}; // give up (should never happen on a bounded map)
+}
+function validateLevel(level){
+  if(level._validated) return;       // run once per level
+  level._validated = true;
+  const reachable = buildReachable(level);
+  const inReach = (x,y)=>reachable.has((x|0)+','+(y|0));
+  const fix = (label, obj)=>{
+    if(!inReach(obj.x, obj.y)){
+      const dest = nearestReachableCell(level, reachable, obj.x, obj.y);
+      console.warn('[FPS-002 reachability] '+level.name+': '+label+' at ('+obj.x+','+obj.y+
+                   ') is in a wall or unreachable pocket — relocating to ('+dest.x+','+dest.y+').');
+      obj.x = dest.x; obj.y = dest.y;
+    }
+  };
+  // Automaton must be reachable
+  fix('Automaton', level.automaton);
+  // Replicator Stations must be on reachable floor
+  (level.stationDefs||[]).forEach((s,i)=>fix('Replicator Station #'+i, s));
+  // Signal Gate must be reachable (it is the sector exit)
+  if(level.gateDef) fix('Signal Gate', level.gateDef);
+  // weapon pickups
+  (level.weaponPickups||[]).forEach((w,i)=>fix('weapon pickup #'+i+' ('+w.type+')', w));
+  // item pickups
+  (level.items||[]).forEach((it,i)=>fix('item #'+i+' ('+it.type+')', it));
+  level._reachable = reachable;
+}
+
+/* ============================================================
+   FPS000-VISUAL-003 / 003B / 003C — Environmental props
+   Props are SOLID for player + drone movement (003B). They do NOT block
+   bullets, line-of-sight, or rendering. 003C: props are placed as FUNCTIONAL
+   CLUSTERS (operational groupings) rather than scattered singles, so a room
+   implies prior human activity ("what work/movement/system happened here?").
+   Every clustered member still passes the 003B safety pipeline: not a corridor
+   pinch, ≥1.0 tile from objectives, and per-candidate reachability revalidation
+   (props as blockers) so progression can never break. Total count stays within
+   the existing per-sector budget — NO density increase. Reads level/reachability/
+   entity positions; writes G.props only.
+   ============================================================ */
+/* Cluster recipes per sector. Each cluster is a small footprint of typed props
+   laid around an anchor cell; (dx,dy) are tile offsets from the anchor. The
+   groupings read as operational zones:
+   S1 maintenance bay · S2 warehouse/loading · S3 server room/data center. */
+const PROP_CLUSTERS = [
+  // Sector 1 — MAINTENANCE BAY
+  [
+    { name:'tool station',  members:[{t:'cabinet',dx:0,dy:0},{t:'crate',dx:1,dy:0},{t:'utilbox',dx:0,dy:1}] },
+    { name:'parts corner',  members:[{t:'crate',dx:0,dy:0},{t:'cabinet',dx:1,dy:0}] },
+    { name:'equipment',     members:[{t:'machine',dx:0,dy:0},{t:'utilbox',dx:1,dy:0}] },
+  ],
+  // Sector 2 — WAREHOUSE / LOADING
+  [
+    { name:'pallet staging',members:[{t:'pallet',dx:0,dy:0},{t:'crate',dx:1,dy:0},{t:'crate',dx:0,dy:1}] },
+    { name:'receiving lane',members:[{t:'pallet',dx:0,dy:0},{t:'rack',dx:1,dy:0}] },
+    { name:'crate stack',   members:[{t:'crate',dx:0,dy:0},{t:'crate',dx:1,dy:0},{t:'pallet',dx:1,dy:1}] },
+  ],
+  // Sector 3 — SERVER ROOM / DATA CENTER
+  [
+    { name:'rack row',      members:[{t:'rack',dx:0,dy:0},{t:'rack',dx:1,dy:0},{t:'datablock',dx:2,dy:0}] },
+    { name:'diagnostic stn',members:[{t:'console',dx:0,dy:0},{t:'machine',dx:1,dy:0}] },
+    { name:'cable corridor',members:[{t:'datablock',dx:0,dy:0},{t:'rack',dx:0,dy:1}] },
+  ],
+];
+const PROP_RADIUS = 0.34;   // collision radius (spec 0.30–0.38); < visual sprite for fair edges
+
+/* Reachability flood-fill from spawn that treats wall tiles AND the given
+   blocked-tile set as impassable. Returns the reachable tile-key Set.
+   Used at placement time only (never per-frame). */
+function reachableWithBlocked(L, blockedSet){
+  const seen=new Set(); const key=(x,y)=>x+','+y;
+  const start=[L.spawn.x|0, L.spawn.y|0];
+  const stack=[start];
+  while(stack.length){
+    const [x,y]=stack.pop();
+    if(x<0||y<0||x>=L.w||y>=L.h) continue;
+    const k=key(x,y);
+    if(seen.has(k)) continue;
+    if(L.grid[y][x]==='#') continue;     // walls block (doors are passable for routing)
+    if(blockedSet.has(k)) continue;      // a placed prop blocks its tile
+    seen.add(k);
+    stack.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+  }
+  return seen;
+}
+
+function placeProps(L, idx){
+  const props=[];
+  if(!L._reachable){ return props; }
+  const rnd = mulberry32(((L.seed>>>0) ^ 0x9E3779B1 ^ (idx*40503))>>>0);
+  const pick = arr => arr[(rnd()*arr.length)|0];
+  const clusters = PROP_CLUSTERS[idx] || PROP_CLUSTERS[idx % PROP_CLUSTERS.length] || PROP_CLUSTERS[0];
+  // total prop budget per sector (unchanged ranges — NO density increase)
+  const ranges=[[3,5],[5,7],[4,6]];
+  const [lo,hi]= ranges[idx] || [3,5];
+  const target = lo + ((rnd()*(hi-lo+1))|0);
+
+  // required reachability targets — must stay reachable from spawn after props
+  const required=[];
+  if(L.automaton) required.push(L.automaton);
+  (L.stationDefs||[]).forEach(s=>required.push(s));
+  if(L.gateDef) required.push(L.gateDef);
+  (L.doors||[]).forEach(d=>required.push({x:d.x+0.5,y:d.y+0.5}));
+  (L.items||[]).forEach(it=>required.push(it));
+  (L.weaponPickups||[]).forEach(w=>required.push(w));
+  const avoid=[{x:L.spawn.x,y:L.spawn.y}, ...required];
+
+  const isFloor=(x,y)=> x>=0&&y>=0&&x<L.w&&y<L.h && L.grid[y][x]==='.';
+  const wallAdj=(x,y)=> !isFloor(x-1,y)||!isFloor(x+1,y)||!isFloor(x,y-1)||!isFloor(x,y+1);
+  // corridor pinch: 1-wide passage — solid props must never sit here.
+  const pinch=(x,y)=>{
+    const ns = !isFloor(x-1,y) && !isFloor(x+1,y);
+    const ew = !isFloor(x,y-1) && !isFloor(x,y+1);
+    return ns||ew;
+  };
+  const farEnough=(cx,cy)=>{
+    for(const a of avoid){ if(Math.abs(cx-a.x)<1.0 && Math.abs(cy-a.y)<1.0) return false; }
+    for(const p of props){ if(Math.abs(cx-p.x)<0.9 && Math.abs(cy-p.y)<0.9) return false; } // members can sit adjacent
+    return true;
+  };
+  const blocked=new Set();
+  const tk=(x,y)=>x+','+y;
+
+  // try to place one prop on tile (x,y) of given type, applying all 003B safety
+  // checks. Returns true if placed. Mutates props/blocked on success.
+  function tryPlaceMember(x,y,type){
+    if(props.length>=target) return false;
+    if(!isFloor(x,y)) return false;
+    if(!L._reachable.has(tk(x,y))) return false;     // must be reachable floor
+    if(pinch(x,y)) return false;                     // never clog a corridor
+    if(blocked.has(tk(x,y))) return false;           // tile already used
+    const cx=x+0.5, cy=y+0.5;
+    if(!farEnough(cx,cy)) return false;
+    blocked.add(tk(x,y));
+    const reach=reachableWithBlocked(L, blocked);
+    if(!required.every(o=> reach.has((o.x|0)+','+(o.y|0)))){ blocked.delete(tk(x,y)); return false; }
+    props.push({ x:cx, y:cy, type, seed:(rnd()*1000)|0, r:PROP_RADIUS, tx:x, ty:y });
+    return true;
+  }
+
+  // candidate ANCHOR cells: reachable, wall-adjacent (room edges/corners), not a
+  // pinch. Clusters grow from these so groupings hug walls and leave lanes open.
+  const anchors=[];
+  for(const k of L._reachable){
+    const [x,y]=k.split(',').map(Number);
+    if(L.grid[y] && L.grid[y][x]==='.' && wallAdj(x,y) && !pinch(x,y)) anchors.push([x,y]);
+  }
+  for(let i=anchors.length-1;i>0;i--){ const j=(rnd()*(i+1))|0; [anchors[i],anchors[j]]=[anchors[j],anchors[i]]; }
+
+  // grow clusters until the budget is met or anchors run out
+  for(const [ax,ay] of anchors){
+    if(props.length>=target) break;
+    const recipe = pick(clusters);
+    // orientation flips so clusters don't all face the same way (deterministic)
+    const fx = (rnd()<0.5)? 1 : -1, fy = (rnd()<0.5)? 1 : -1;
+    let placedAny=false;
+    for(const m of recipe.members){
+      if(props.length>=target) break;
+      const mx=ax + m.dx*fx, my=ay + m.dy*fy;
+      if(tryPlaceMember(mx,my,m.t)) placedAny=true;
+    }
+    // if an anchor yielded nothing, just move on (place fewer rather than force)
+  }
+  return props;
+}
+
+/* Solid-prop collision test (003B). True if a circle of radius r at (x,y)
+   overlaps any prop's collision circle. Movement only — NOT bullets/LoS. */
+function blockedByProp(x,y,r){
+  const props=G.props;
+  if(!props||!props.length) return false;
+  for(const p of props){
+    const rr=(p.r||PROP_RADIUS)+r;
+    const dx=x-p.x, dy=y-p.y;
+    if(dx*dx+dy*dy < rr*rr) return true;
+  }
+  return false;
+}
+
+function startLevel(idx){
+  G.levelIndex = idx;
+  // Build a fresh sector each run: authored-template generation with reachability
+  // verification, falling back to the proven static map if generation fails.
+  const L = buildSector(idx);
+  G.level = L;
+  validateLevel(L);   // LOCKED: ensure spawn→boss reachable, relocate stray entities
+  G.px = L.spawn.x; G.py = L.spawn.y; G.dir = L.spawnDir;
+  // Full loadout: start every sector at full health/armor with all three
+  // weapons and full ammo/battery. (Prototype testing loadout.)
+  G.health = 100;
+  G.armor = 100;
+  G.owned = { pistol:true, rifle:true, burst:true };
+  G.weapons = ['pistol','rifle','burst'];
+  G.curWeapon = 0;
+  WEAPONS.pistol.ammo = WEAPONS.pistol.max;   // 12
+  WEAPONS.rifle.ammo  = WEAPONS.rifle.max;    // 30
+  WEAPONS.burst.ammo  = WEAPONS.burst.max;    // 100%
+  // Generated/cloned sectors carry no weapon pickups (full loadout owns all),
+  // so there are no redundant weapon prompts to convert.
+  // boss
+  G.boss = { x:L.automaton.x, y:L.automaton.y, hp:380, maxHp:380, alive:true,
+             flash:0, t:0, hitR:0.45 };
+  // Replicator Stations — destructible fixed spawner nodes commanded by the
+  // Automaton. Built fresh each run from the validated station definitions.
+  G.stations = (L.stationDefs||[]).map(s=>({
+    x:s.x, y:s.y, hp:90, maxHp:90, alive:true, flash:0, collapse:0, hitR:0.4
+  }));
+  // Signal Gate — locked sector exit; opens only when the signal network dies.
+  G.gate = L.gateDef ? { x:L.gateDef.x, y:L.gateDef.y, open:false } : null;
+  G.signalCut = false;
+  G.drones = [];
+  G.spawnTimer = 10;
+  G.shots = [];
+  G.recharge = 0; G.fireCooldown=0; G.punchCd=0;
+  G.stats = { shots:0, hits:0, dronesKilled:0, dronesCollapsed:0, stationsCut:0, dmgTaken:0 };
+  G.props = placeProps(L, idx);   // solid room props (003B), reachability-validated
+  seedInitialDrones(idx);
+  G.startTime = performance.now();
+  G.state='play';
+  if(typeof clearTouchControls==='function') clearTouchControls();
+  if(isTouch()) touchEl.style.display='block';
+  hide('titleScreen'); hide('overScreen'); hide('winScreen'); hide('pauseScreen');
+}
+
+/* ============================================================
+   ENEMIES
+   ============================================================ */
+function spawnDrone(forceState, near, forceArch){
+  const L=G.level;
+  const states=['normal','confused','hunting'];
+  const state = forceState || states[(Math.random()*3)|0];
+  const archetypes=['worker','security','scout'];
+  const archetype = forceArch || archetypes[(Math.random()*3)|0];
+  // default spawn anchor is the boss; initial seeding can pass a different point
+  const ax0 = near ? near.x : G.boss.x;
+  const ay0 = near ? near.y : G.boss.y;
+  const reach = L._reachable;
+  const okCell = (x,y)=> !cellSolid(L,x|0,y|0) && (!reach || reach.has((x|0)+','+(y|0))) && !blockedByProp(x, y, 0.3);
+  let sx=null, sy=null;
+  for(let tries=0;tries<24;tries++){
+    const ax=ax0+(Math.random()*2-1)*1.8;
+    const ay=ay0+(Math.random()*2-1)*1.8;
+    if(okCell(ax,ay)){ sx=ax; sy=ay; break; }
+  }
+  // fallback: nearest reachable floor to the anchor (guarantees in-bounds, on floor)
+  if(sx===null){
+    if(reach){ const d=nearestReachableCell(L, reach, ax0, ay0); sx=d.x; sy=d.y; }
+    else { sx=G.boss.x; sy=G.boss.y; }
+  }
+  // Archetype sets body stats; state sets behavior. Both must read in-view.
+  const A = { worker:{hp:30,spd:0.7,dmg:6,size:0.95},
+              security:{hp:50,spd:1.0,dmg:12,size:1.1},
+              scout:{hp:24,spd:1.45,dmg:7,size:0.8} }[archetype];
+  // hunting state is a bit faster/aggressive regardless of archetype
+  const spd = A.spd * (state==='hunting'?1.2:1);
+  G.drones.push({ archetype, state, x:sx, y:sy, hp:A.hp, maxHp:A.hp, spd,
+    dmg:A.dmg, sizeMul:A.size, dir:Math.random()*6.28, wanderT:0, flash:0,
+    atkCd:0, hitR:0.42, collapse:0, bob:Math.random()*6.28 });
+}
+
+/* The Automaton commands its Replicator Stations to release drones.
+   One living station spawns one randomized drone per command. Sector 3
+   (levelIndex 2) may fire up to two stations per command if drone count is
+   still below cap. Destroyed stations never spawn. Cap keeps it readable. */
+function commandStations(){
+  const live = G.stations.filter(s=>s.alive);
+  if(live.length===0) return;                 // no spawners left
+  if(G.drones.length>=G.maxDrones) return;     // respect active cap
+  const maxThisCommand = (G.levelIndex===2) ? 2 : 1;
+  // shuffle living stations, fire up to maxThisCommand while under cap
+  for(let i=live.length-1;i>0;i--){ const j=(Math.random()*(i+1))|0; [live[i],live[j]]=[live[j],live[i]]; }
+  let fired=0;
+  for(const st of live){
+    if(fired>=maxThisCommand) break;
+    if(G.drones.length>=G.maxDrones) break;
+    spawnDrone(undefined, st);   // anchor spawn at the station
+    st.flash=0.15;               // brief "released" pulse
+    fired++;
+  }
+}
+
+
+/* Light initial drone presence per sector.
+   L1: 1-2 (weighted working/confused), L2: 2-3, L3: 3-4.
+   Seeded around the boss area so the player isn't ambushed at spawn,
+   and the active cap (maxDrones) is still respected. */
+function seedInitialDrones(idx){
+  const plan = [
+    { min:1, max:2, pool:['normal','normal','confused','confused','hunting'] },
+    { min:2, max:3, pool:['normal','confused','confused','hunting','hunting'] },
+    { min:3, max:4, pool:['normal','confused','hunting','hunting','hunting'] },
+  ][idx] || { min:1, max:2, pool:['normal','confused'] };
+  const count = Math.min(G.maxDrones, plan.min + (Math.random()*(plan.max-plan.min+1)|0));
+  for(let i=0;i<count;i++){
+    const s = plan.pool[(Math.random()*plan.pool.length)|0];
+    spawnDrone(s);
+  }
+}
+
+function updateDrones(dt){
+  const L=G.level;
+  for(const d of G.drones){
+    if(d.flash>0) d.flash-=dt;
+    d.bob += dt*6;
+    // collapsing drones (signal cut) just tick down; no behavior/attack
+    if(d.collapse>0){ d.collapse-=dt; continue; }
+    const dxp=G.px-d.x, dyp=G.py-d.y;
+    const dist=Math.hypot(dxp,dyp);
+    // normal drones can acquire the player and flip to hunting
+    if(d.state==='normal' && dist<2.2 && Math.random()<0.02) d.state='hunting';
+    let move=false, ang=d.dir;
+    if(d.state==='hunting'){
+      ang=Math.atan2(dyp,dxp); move=true; d.dir=ang;
+    } else if(d.state==='confused'){
+      d.wanderT-=dt; if(d.wanderT<=0){ d.dir+=(Math.random()*2-1)*1.4; d.wanderT=0.4+Math.random()*0.8; }
+      ang=d.dir; move=true;
+    } else { // normal: slow patrol, approaches only when close
+      d.wanderT-=dt; if(d.wanderT<=0){ d.dir+=(Math.random()*2-1)*0.6; d.wanderT=1.2+Math.random(); }
+      ang=d.dir; move = dist<5;
+    }
+    if(move){
+      const nx=d.x+Math.cos(ang)*d.spd*dt;
+      const ny=d.y+Math.sin(ang)*d.spd*dt;
+      // walls AND solid props block drone movement (003B); bounce dir on block
+      if(!cellSolid(L,nx|0,d.y|0) && !blockedByProp(nx, d.y, d.hitR*0.6)) d.x=nx; else d.dir+=1.0;
+      if(!cellSolid(L,d.x|0,ny|0) && !blockedByProp(d.x, ny, d.hitR*0.6)) d.y=ny; else d.dir+=1.0;
+    }
+    // attack
+    if(d.atkCd>0) d.atkCd-=dt;
+    if(dist<0.7 && d.atkCd<=0){ damagePlayer(d.dmg); d.atkCd=0.8; }
+  }
+  // remove dead (hp<=0) and finished-collapsing drones
+  G.drones = G.drones.filter(d=>{
+    const remove = !(d.hp>0) || (d._collapsing && d.collapse<=0);
+    if(remove){   // display-only tally; does not change which drones are removed
+      if(d._collapsing) G.stats.dronesCollapsed++; else G.stats.dronesKilled++;
+    }
+    return !remove;
+  });
+}
+
+function damagePlayer(amt){
+  const incoming=amt;   // display-only snapshot for stats
+  // armor first, then health
+  if(G.armor>0){
+    const absorb=Math.min(G.armor, amt*0.6);
+    G.armor-=absorb; amt-=absorb;
+  }
+  G.health-=amt;
+  G.stats.dmgTaken += incoming;   // display-only; does not affect armor/health logic
+  if(G.health<=0){ G.health=0; gameOver(false); }
+}
+
+/* ============================================================
+   SHOOTING (hitscan along player facing)
+   ============================================================ */
+function tryFire(){
+  const wk=G.weapons[G.curWeapon]; const w=WEAPONS[wk];
+  if(G.fireCooldown>0) return;
+  if(w.energy){
+    // Burst Charge: battery % IS the ammo. Each burst consumes burstCostPct.
+    // Recharge is purely a 3s timing gate between bursts; it never grants
+    // battery. If battery is below one burst's cost, the weapon is empty and
+    // the player must find a battery pickup.
+    if(G.recharge>0) return;                 // still in timing gate
+    if(w.ammo < w.burstCostPct) return;       // depleted — needs a pickup, no free charge
+    w.ammo -= w.burstCostPct;
+    G.recharge = w.rechargeTime;              // start the 3s gate after firing
+  } else {
+    if(w.ammo<=0) return;
+    w.ammo--;
+  }
+  G.fireCooldown = w.fireDelay;
+  G.muzzle = 0.07;
+  for(let p=0;p<w.pellets;p++){
+    G.stats.shots++;   // display-only; one count per pellet (matches per-pellet hits)
+    const spread = (Math.random()*2-1)*w.spread;
+    hitscan(G.dir+spread, w.dmg);
+  }
+}
+
+function hitscan(angle, dmg){
+  const dx=Math.cos(angle), dy=Math.sin(angle);
+  const L=G.level;
+  let best=null, bestDist=Infinity;
+  // check boss
+  if(G.boss.alive){
+    const t=rayHitCircle(G.px,G.py,dx,dy,G.boss.x,G.boss.y,G.boss.hitR);
+    if(t!==null && t<bestDist){ bestDist=t; best={kind:'boss'}; }
+  }
+  // check Replicator Stations
+  for(const st of G.stations){
+    if(!st.alive) continue;
+    const t=rayHitCircle(G.px,G.py,dx,dy,st.x,st.y,st.hitR);
+    if(t!==null && t<bestDist){ bestDist=t; best={kind:'station',ref:st}; }
+  }
+  // check drones (collapsing drones are dissolving — not valid targets)
+  for(const d of G.drones){
+    if(d._collapsing) continue;
+    const t=rayHitCircle(G.px,G.py,dx,dy,d.x,d.y,d.hitR);
+    if(t!==null && t<bestDist){ bestDist=t; best={kind:'drone',ref:d}; }
+  }
+  // wall distance — block shot if wall closer
+  const wallT=rayWallDist(G.px,G.py,dx,dy);
+  if(wallT<bestDist){ best=null; bestDist=wallT; }
+  // tracer
+  G.shots.push({ x0:G.px,y0:G.py, x1:G.px+dx*Math.min(bestDist,20), y1:G.py+dy*Math.min(bestDist,20), life:0.06 });
+  if(best){
+    G.stats.hits++;   // display-only; counted on any entity connection
+    if(best.kind==='boss'){ G.boss.hp-=dmg; G.boss.flash=0.1;
+      if(G.boss.hp<=0){ G.boss.alive=false; bossDown(); } }
+    else if(best.kind==='station'){ damageStation(best.ref, dmg); }
+    else { best.ref.hp-=dmg; best.ref.flash=0.12; }
+  }
+}
+function damageStation(st, dmg){
+  if(!st.alive) return;
+  st.hp-=dmg; st.flash=0.12;
+  if(st.hp<=0){ st.hp=0; st.alive=false; st.collapse=0.5; /* spark/collapse feedback */
+    G.stats.stationsCut++;   // display-only; once per station (guarded by !st.alive above)
+    checkSignalNetwork(); }
+}
+function rayHitCircle(ox,oy,dx,dy,cx,cy,r){
+  const ex=cx-ox, ey=cy-oy;
+  const proj=ex*dx+ey*dy;
+  if(proj<0) return null;
+  const perp=Math.abs(ex*dy-ey*dx);
+  if(perp>r) return null;
+  return proj;
+}
+function rayWallDist(ox,oy,dx,dy){
+  let t=0; const step=0.05;
+  for(let i=0;i<400;i++){ t+=step; const mx=(ox+dx*t)|0, my=(oy+dy*t)|0; if(cellSolid(G.level,mx,my)) return t; }
+  return 20;
+}
+
+function bossDown(){
+  // The Automaton is down, but the signal network only fully collapses once
+  // every Replicator Station is also destroyed.
+  checkSignalNetwork();
+}
+function checkSignalNetwork(){
+  if(G.state!=='play') return;
+  if(G.signalCut) return;                       // already collapsed
+  const stationsLeft = G.stations.filter(s=>s.alive).length;
+  if(G.boss.alive || stationsLeft>0) return;    // network still has a source
+  // SIGNAL CUT: command source gone.
+  G.signalCut = true;
+  // remaining drones lose the signal and collapse (no need to hunt them down)
+  for(const d of G.drones){ if(!d._collapsing){ d._collapsing=true; d.collapse=0.6; d.hp=Math.min(d.hp,1); } }
+  // unlock the Signal Gate (the real sector exit)
+  if(G.gate){ G.gate.open=true; }
+}
+// Build the sector-clear stats grid from display-only counters. Returns HTML.
+function buildClearStats(){
+  const s=G.stats;
+  const secs=((performance.now()-G.startTime)/1000).toFixed(1);
+  const autoStatus = G.boss.alive ? 'ACTIVE' : 'DOWN';
+  const stTotal=G.stations.length;
+  const stCut = s.stationsCut;
+  const dronesNeutralized = s.dronesKilled + s.dronesCollapsed;
+  const dronesLeft = G.drones.length;
+  // Hit % is only meaningful for non-pellet weapons fired with matched counters;
+  // shots and hits are both per-pellet here, so the ratio is safe. Guard /0.
+  const hitPct = s.shots>0 ? Math.round((s.hits/s.shots)*100) : 0;
+  const row=(k,v)=>'<span class="k">'+k+'</span><span class="v">'+v+'</span>';
+  return row('CLEAR TIME', secs+'s')+
+         row('HP LEFT', Math.round(G.health)+'%')+
+         row('ARMOR LEFT', Math.round(G.armor)+'%')+
+         row('AUTOMATON', autoStatus)+
+         row('STATIONS CUT', stCut+'/'+stTotal)+
+         row('DRONES NEUTRALIZED', dronesNeutralized)+
+         row('DRONES REMAINING', dronesLeft)+
+         row('SHOTS FIRED', s.shots)+
+         row('HIT %', s.shots>0 ? hitPct+'%' : '—');
+}
+// Player reaching/using the unlocked Signal Gate advances the run.
+function enterSignalGate(){
+  if(!G.gate || !G.gate.open || G.state!=='play') return;
+  if(G.levelIndex>=LEVELS.length-1){ gameWin(); return; }
+  G.state='over';
+  show('overScreen');
+  const t=document.getElementById('overTitle');
+  t.textContent='SECTOR CLEAR'; t.classList.add('ok');
+  document.getElementById('overSub').textContent='Signal cut. Gate open. Advancing to the next sector.';
+  const cs=document.getElementById('clearStats');
+  cs.innerHTML=buildClearStats();
+  cs.classList.remove('hidden');
+  document.getElementById('overBtn').textContent='NEXT SECTOR';
+  G._advance=true;
+}
+function gameOver(win){
+  G.state='over';
+  show('overScreen');
+  const t=document.getElementById('overTitle');
+  t.textContent='SECTOR FAILED'; t.classList.remove('ok');
+  document.getElementById('overSub').textContent='Health depleted. The Automaton is still active.';
+  document.getElementById('clearStats').classList.add('hidden');   // stats card only on clear
+  document.getElementById('overBtn').textContent='RETRY SECTOR';
+  G._advance=false;
+}
+function gameWin(){
+  G.state='win'; show('winScreen');
+  const secs=((performance.now()-G.startTime)/1000).toFixed(1);
+  document.getElementById('winStats').textContent='Final sector time: '+secs+'s · Health '+Math.round(G.health)+'% · Armor '+Math.round(G.armor)+'%';
+}
+
+/* ============================================================
+   PICKUPS
+   ============================================================ */
+function rnd(min,max){ return min+Math.random()*(max-min); }
+function checkPickups(){
+  const L=G.level;
+  // auto items
+  for(const it of L.items){
+    if(it.taken) continue;
+    if(Math.hypot(it.x-G.px,it.y-G.py)<0.5){
+      applyItem(it); it.taken=true;
+    }
+  }
+}
+function applyItem(it){
+  switch(it.type){
+    case 'health': G.health=Math.min(100,G.health+rnd(20,35)); break;
+    case 'health_ifak': G.health=Math.min(100,G.health+rnd(30,45)); break;
+    case 'stim': G.health=Math.min(200,G.health+50); break;
+    case 'armor': G.armor=Math.min(100,G.armor+rnd(20,40)); break;
+    case 'recon': G.armor=Math.min(200,G.armor+60); break;
+    case 'ammo_pistol': WEAPONS.pistol.ammo=Math.min(WEAPONS.pistol.max, WEAPONS.pistol.ammo+(3+(Math.random()*4|0))); break;
+    case 'ammo_rifle': WEAPONS.rifle.ammo=Math.min(WEAPONS.rifle.max, WEAPONS.rifle.ammo+(8+(Math.random()*8|0))); break;
+    case 'battery': WEAPONS.burst.ammo=Math.min(WEAPONS.burst.max, WEAPONS.burst.ammo+(20+(Math.random()*20|0))); break;
+  }
+}
+
+function nearestWeaponPickup(){
+  const L=G.level; let best=null,bd=0.7;
+  for(const w of L.weaponPickups){ if(w.taken) continue;
+    const d=Math.hypot(w.x-G.px,w.y-G.py); if(d<bd){bd=d;best=w;} }
+  return best;
+}
+function nearestDoor(){
+  const L=G.level; let best=null,bd=1.1;
+  for(const d of L.doors){ if(d.open>0.95) continue;
+    const dist=Math.hypot((d.x+0.5)-G.px,(d.y+0.5)-G.py); if(dist<bd){bd=dist;best=d;} }
+  return best;
+}
+function nearGate(){
+  // returns the gate object if the player is close enough to interact
+  if(!G.gate) return null;
+  return (Math.hypot(G.gate.x-G.px, G.gate.y-G.py) < 1.0) ? G.gate : null;
+}
+
+/* ============================================================
+   ACTIONS (intent layer)
+   ============================================================ */
+function handleActions(dt){
+  // A priority: Signal Gate (if open & in range) → open door → shoot
+  if(input.a){
+    const gate=nearGate();
+    const door=nearestDoor();
+    if(gate && gate.open && input.justPressed.a){ enterSignalGate(); }
+    else if(gate && gate.open){ /* hold on gate: wait for press edge */ }
+    else if(door && input.justPressed.a){ door.opening=true; }
+    else if(!door && !(gate && gate.open)){ tryFire(); }
+  }
+  // B: Signal Baton strike (close-range melee) — pick up weapon if one is near
+  if(input.justPressed.b){
+    const wp=nearestWeaponPickup();
+    if(wp){ wp.taken=true; if(!G.owned[wp.type]){ G.owned[wp.type]=true; G.weapons.push(wp.type);
+              G.curWeapon=G.weapons.length-1; }
+            if(wp.type==='rifle') WEAPONS.rifle.ammo=Math.max(WEAPONS.rifle.ammo,30);
+            if(wp.type==='burst') WEAPONS.burst.ammo=Math.max(WEAPONS.burst.ammo,100);
+    } else { batonStrike(); }
+  }
+  // Select: cycle weapon
+  if(input.justPressed.select && G.weapons.length>1){
+    G.curWeapon=(G.curWeapon+1)%G.weapons.length;
+  }
+  // (Start pause/resume is handled globally in the frame loop so it toggles
+  //  from either state.)
+  // R restart
+  if(input.justPressed.r){ startLevel(G.levelIndex); }
+}
+function batonStrike(){
+  if(G.punchCd>0) return; G.punchCd=0.32; G.muzzle=0.05;
+  // short-range melee in front
+  const dx=Math.cos(G.dir), dy=Math.sin(G.dir);
+  if(G.boss.alive && rayHitCircle(G.px,G.py,dx,dy,G.boss.x,G.boss.y,G.boss.hitR+0.2)!==null
+     && Math.hypot(G.boss.x-G.px,G.boss.y-G.py)<1.0){ G.boss.hp-=18; G.boss.flash=0.1;
+       if(G.boss.hp<=0){G.boss.alive=false;bossDown();} }
+  for(const st of G.stations){
+    if(st.alive && Math.hypot(st.x-G.px,st.y-G.py)<1.0){
+      const a=Math.atan2(st.y-G.py,st.x-G.px);
+      if(Math.abs(((a-G.dir+Math.PI*3)%(Math.PI*2))-Math.PI)<0.9){ damageStation(st,18); }
+    }
+  }
+  for(const d of G.drones){
+    if(Math.hypot(d.x-G.px,d.y-G.py)<0.9){
+      const a=Math.atan2(d.y-G.py,d.x-G.px);
+      if(Math.abs(((a-G.dir+Math.PI*3)%(Math.PI*2))-Math.PI)<0.9){ d.hp-=24; d.flash=0.12; }
+    }
+  }
+}
+
+/* ============================================================
+   MOVEMENT
+   ============================================================ */
+function updateMovement(dt){
+  const L=G.level;
+  if(input.left) G.dir-=TURN_SPEED*dt;
+  if(input.right) G.dir+=TURN_SPEED*dt;
+  let mvx=0,mvy=0;
+  const fx=Math.cos(G.dir), fy=Math.sin(G.dir);
+  const sx=Math.cos(G.dir+Math.PI/2), sy=Math.sin(G.dir+Math.PI/2);
+  if(input.up){ mvx+=fx; mvy+=fy; }
+  if(input.down){ mvx-=fx; mvy-=fy; }
+  if(input.x){ mvx-=sx*STRAFE_SPEED/MOVE_SPEED; mvy-=sy*STRAFE_SPEED/MOVE_SPEED; }
+  if(input.y){ mvx+=sx*STRAFE_SPEED/MOVE_SPEED; mvy+=sy*STRAFE_SPEED/MOVE_SPEED; }
+  const len=Math.hypot(mvx,mvy);
+  if(len>0){ mvx/=len; mvy/=len; }
+  const nx=G.px+mvx*MOVE_SPEED*dt;
+  const ny=G.py+mvy*MOVE_SPEED*dt;
+  // collide with radius — walls (cellSolid) AND solid props (blockedByProp, 003B)
+  if(!cellSolid(L,(nx+Math.sign(mvx)*PLAYER_RADIUS)|0, G.py|0) && !blockedByProp(nx, G.py, PLAYER_RADIUS)) G.px=nx;
+  if(!cellSolid(L,G.px|0,(ny+Math.sign(mvy)*PLAYER_RADIUS)|0) && !blockedByProp(G.px, ny, PLAYER_RADIUS)) G.py=ny;
+}
+
+function updateDoors(dt){
+  for(const d of G.level.doors){
+    if(d.opening && d.open<1){ d.open=Math.min(1,d.open+dt*1.5); }
+  }
+}
+
+/* ============================================================
+   RAYCAST RENDER
+   ============================================================ */
+const FOV = Math.PI/3;
+const NUMRAYS = W;             // 1 ray per column
+const zbuf = new Float32Array(W);
+
+/* ============================================================
+   FPS000-VISUAL-002 — Environmental realism + degradation (DISPLAY ONLY)
+   Per-sector color identity, industrial floor cues, and a slow reality-
+   degradation wobble. None of this reads or writes gameplay state beyond
+   G.levelIndex / G.level.seed / G.startTime (all read-only here). Sprites,
+   HUD, controls, generation, and unlock logic are untouched.
+   ============================================================ */
+const SECTOR_PALETTES = [
+  // S1 — Signal Maintenance Bay: cool steel-blue utility space
+  { wall:[44,74,112], seam:[18,26,30], floor:[18,16,14], ceil:[14,18,28],
+    route:[90,200,180], name:'steel' },
+  // S2 — Storage Deck: warmer amber-grey warehouse
+  { wall:[86,72,46], seam:[30,24,14], floor:[22,18,12], ceil:[20,18,14],
+    route:[210,170,80], name:'amber' },
+  // S3 — Reactor Node: hot magenta-red data/reactor hall
+  { wall:[92,46,78], seam:[30,14,26], floor:[20,12,18], ceil:[22,12,20],
+    route:[220,90,150], name:'reactor' },
+];
+function sectorPalette(){
+  const i=G.levelIndex|0;
+  const base = SECTOR_PALETTES[i] || SECTOR_PALETTES[i % SECTOR_PALETTES.length] || SECTOR_PALETTES[0];
+  // Let the level seed nudge the palette so repeat runs of a sector vary a touch
+  // (deterministic, display-only). Small ±hue shift, never enough to confuse.
+  const seed = (G.level && G.level.seed) ? (G.level.seed>>>0) : 0;
+  const k = ((seed % 13) - 6) * 0.6;   // ~ -3.6..+3.6
+  const sh = a => [Math.max(0,a[0]+k), Math.max(0,a[1]+k*0.6), Math.max(0,a[2]-k*0.4)];
+  return { wall:sh(base.wall), seam:base.seam, floor:sh(base.floor),
+           ceil:base.ceil, route:base.route };
+}
+/* Reality degradation 0..1 over the sector run — DISPLAY ONLY, clamped tiny so
+   targets/doors/gates never become hard to read. */
+function degradeFactor(){
+  if(!G.startTime) return 0;
+  const elapsed=(performance.now()-G.startTime)/1000;
+  return Math.min(1, elapsed/90);     // ramps in over ~90s, then holds
+}
+
+function render(){
+  // ---- ceiling / floor: per-sector reconstructed operational space ----
+  // FPS000-VISUAL-002 extends VISUAL-001's depth banding with a per-sector
+  // palette and subtle industrial floor cues (utility bands + faint route
+  // markings). Fixed small fill count; draws BEFORE walls/sprites so occlusion
+  // and sprite readability are unchanged.
+  const PAL=sectorPalette();
+  const deg=degradeFactor();
+  // slow degradation wobble — clamped tiny (≤~6% luminance) so it never hurts reads
+  const wob = 1 + (deg*0.06) * Math.sin(performance.now()/420);
+  const half=H/2, BANDS=6;
+  for(let i=0;i<BANDS;i++){
+    const t=i/(BANDS-1);                       // 0 at top, 1 at horizon
+    // ceiling: palette ceil tone, darkest at the horizon
+    const cr=(PAL.ceil[0]*(1-0.4*t)*wob)|0, cg=(PAL.ceil[1]*(1-0.4*t)*wob)|0, cb=(PAL.ceil[2]*(1-0.4*t)*wob)|0;
+    ctx.fillStyle='rgb('+cr+','+cg+','+cb+')';
+    ctx.fillRect(0, (half*i/BANDS)|0, W, Math.ceil(half/BANDS));
+    // floor: palette floor tone, brightening slightly toward the player (bottom)
+    const fr=(PAL.floor[0]*(0.7+0.7*t)*wob)|0, fg=(PAL.floor[1]*(0.7+0.7*t)*wob)|0, fb=(PAL.floor[2]*(0.7+0.7*t)*wob)|0;
+    ctx.fillStyle='rgb('+fr+','+fg+','+fb+')';
+    ctx.fillRect(0, (half + half*i/BANDS)|0, W, Math.ceil(half/BANDS));
+  }
+  // industrial floor: a few darker utility seams (tile/cement joints) across the
+  // floor half, perspective-spaced so the ground reads as a real surface.
+  ctx.fillStyle='rgba(0,0,0,0.18)';
+  for(let i=1;i<=5;i++){
+    const yy=half + (half*i*i)/26;
+    if(yy>=H) break;
+    ctx.fillRect(0, yy|0, W, 1);
+  }
+  // faint route / system-direction marking (NOT player guidance) in palette hue —
+  // a couple of short dashes near the floor, low opacity, fading toward horizon.
+  const [rr0,rg0,rb0]=PAL.route;
+  for(let i=2;i<=4;i++){
+    const yy=half + (half*i*i)/22;
+    if(yy>=H) break;
+    const a=(0.04+0.05*(i/4)).toFixed(2);
+    ctx.fillStyle='rgba('+(rr0|0)+','+(rg0|0)+','+(rb0|0)+','+a+')';
+    const dashW=Math.max(4,(W*0.06)|0), gap=Math.max(6,(W*0.10)|0);
+    for(let x=(W*0.12)|0; x<W*0.88; x+=dashW+gap){ ctx.fillRect(x, yy|0, dashW, 1); }
+  }
+
+  const L=G.level;
+  for(let col=0;col<NUMRAYS;col++){
+    const camX = 2*col/NUMRAYS - 1;
+    const rayAng = G.dir + Math.atan(camX*Math.tan(FOV/2));
+    const dx=Math.cos(rayAng), dy=Math.sin(rayAng);
+    // DDA
+    let mapX=G.px|0, mapY=G.py|0;
+    const deltaX=Math.abs(1/dx), deltaY=Math.abs(1/dy);
+    let stepX, stepY, sideX, sideY;
+    if(dx<0){ stepX=-1; sideX=(G.px-mapX)*deltaX; } else { stepX=1; sideX=(mapX+1-G.px)*deltaX; }
+    if(dy<0){ stepY=-1; sideY=(G.py-mapY)*deltaY; } else { stepY=1; sideY=(mapY+1-G.py)*deltaY; }
+    let hit=false, side=0, isDoor=false, steps=0;
+    while(!hit && steps<64){
+      if(sideX<sideY){ sideX+=deltaX; mapX+=stepX; side=0; }
+      else { sideY+=deltaY; mapY+=stepY; side=1; }
+      steps++;
+      if(mapX<0||mapY<0||mapX>=L.w||mapY>=L.h){ hit=true; break; }
+      const ch=L.grid[mapY][mapX];
+      if(ch==='#'){ hit=true; }
+      else if(ch==='D'){ const door=L.doors.find(d=>d.x===mapX&&d.y===mapY);
+        if(!door||door.open<0.95){ hit=true; isDoor=true; } }
+    }
+    let perp = side===0 ? (sideX-deltaX) : (sideY-deltaY);
+    if(perp<0.0001) perp=0.0001;
+    zbuf[col]=perp;
+    const lineH = Math.min(H*4, (H/perp));
+    const y0=(H-lineH)/2, y1=(H+lineH)/2;
+    // base wall color — per-sector palette (FPS000-VISUAL-002)
+    let r,g,b;
+    if(isDoor){ r=120;g=90;b=40; }
+    else {
+      // per-cell hue variation so panels/rooms read as distinct reconstructed
+      // surfaces. Deterministic from cell coords, tinted by the sector palette.
+      const hueSeed = ((mapX*73856093) ^ (mapY*19349663)) >>> 0;
+      const v = (hueSeed % 40) - 12;            // -12..27 tint
+      r=PAL.wall[0] + (v*0.4|0); g=PAL.wall[1] + (v*0.5|0); b=PAL.wall[2] + (v*0.7|0);
+      // reconstruction "seam" columns: every few world units a brighter strip
+      const seamCoord = side===0 ? (G.py + dy*perp) : (G.px + dx*perp);
+      if((Math.floor(seamCoord*2) % 6)===0){ r+=18; g+=26; b+=30; }
+      // degradation flicker on walls — clamped tiny, grows slowly over the run
+      if(deg>0){ const f=1 + (deg*0.05)*Math.sin(performance.now()/260 + mapX*1.7 + mapY*0.9);
+        r*=f; g*=f; b*=f; }
+    }
+    const shade = Math.max(0.25, 1 - perp/9) * (side===1?0.7:1);
+    // distance haze (VISUAL-001): blend far walls toward the void tone so depth
+    // reads and near gameplay surfaces stand out. Near walls ~unchanged.
+    let rr=r*shade, gg=g*shade, bb=b*shade;
+    const haze=Math.min(0.55, perp/14);        // 0 near → up to 0.55 far
+    if(haze>0){
+      rr=rr*(1-haze) + PAL.ceil[0]*haze;        // fade toward this sector's void tone
+      gg=gg*(1-haze) + PAL.ceil[1]*haze;
+      bb=bb*(1-haze) + PAL.ceil[2]*haze;
+    }
+    ctx.fillStyle='rgb('+Math.max(0,rr|0)+','+Math.max(0,gg|0)+','+Math.max(0,bb|0)+')';
+    ctx.fillRect(col,y0,1,y1-y0);
+    // horizontal panel lines: darker bands at thirds of the wall slice (panel seams)
+    if(lineH>14){
+      ctx.fillStyle='rgba(0,0,0,0.22)';
+      const b1=y0+(y1-y0)*0.34, b2=y0+(y1-y0)*0.67;
+      ctx.fillRect(col,b1|0,1,1); ctx.fillRect(col,b2|0,1,1);
+      // floor marking accent: bright pip near the base of nearby walls
+      if(perp<3.2 && !isDoor && (col % 6)===0){ ctx.fillStyle='rgba(90,200,180,0.20)'; ctx.fillRect(col,(y1-2)|0,1,2); }
+    }
+  }
+
+  // ---- sprites (gate, boss, stations, drones, pickups) ----
+  const sprites=[];
+  if(G.gate) sprites.push({x:G.gate.x,y:G.gate.y,kind:'gate',ref:G.gate});
+  if(G.boss.alive) sprites.push({x:G.boss.x,y:G.boss.y,kind:'boss',ref:G.boss});
+  for(const st of G.stations) if(st.alive || st.collapse>0) sprites.push({x:st.x,y:st.y,kind:'station',ref:st});
+  for(const d of G.drones) sprites.push({x:d.x,y:d.y,kind:'drone',ref:d});
+  for(const w of G.level.weaponPickups) if(!w.taken) sprites.push({x:w.x,y:w.y,kind:'weapon',ref:w});
+  for(const it of G.level.items) if(!it.taken) sprites.push({x:it.x,y:it.y,kind:'item',ref:it});
+  for(const pr of (G.props||[])) sprites.push({x:pr.x,y:pr.y,kind:'prop',ref:pr});
+  // sort far->near
+  sprites.forEach(s=>{ s.dist=(s.x-G.px)**2+(s.y-G.py)**2; });
+  sprites.sort((a,b)=>b.dist-a.dist);
+  for(const s of sprites) drawSprite(s);
+
+  // tracers
+  drawTracers();
+  // weapon viewmodel + muzzle
+  drawViewmodel();
+}
+
+function drawSprite(s){
+  const relX=s.x-G.px, relY=s.y-G.py;
+  const invDet=1; // simple projection
+  // transform to camera space
+  const cosD=Math.cos(-G.dir), sinD=Math.sin(-G.dir);
+  const tx=relX*cosD - relY*sinD;   // depth-ish along facing
+  const ty=relX*sinD + relY*cosD;   // lateral
+  if(tx<=0.1) return; // behind
+  const screenX = (W/2) * (1 + ty/ (tx*Math.tan(FOV/2)));
+  const dist=Math.hypot(relX,relY);
+  let size = (H/dist);
+  if(s.kind==='boss') size*=1.7;
+  else if(s.kind==='gate') size*=1.5;
+  else if(s.kind==='station') size*=1.05;
+  else if(s.kind==='weapon'||s.kind==='item') size*=0.5;
+  else if(s.kind==='drone') size *= 1.15 * (s.ref.sizeMul||1); // readability lock: bigger drones
+  else if(s.kind==='prop') size*=0.8;   // decorative dressing, grounded
+  else size*=0.85;
+  const sx=screenX, sy=H/2;
+  const w=size, h=size;
+  let left=sx-w/2, top=sy-h/2;
+  // FPS000-VISUAL-003D — floor anchoring for props ONLY. Floating sprites
+  // (drones) and tall structures (gate) stay horizon-centered, but a floor
+  // object's BASE must sit on the projected floor line for its distance so it
+  // reads as installed on the room plane, not a billboard hovering at mid-
+  // screen. The floor line for distance `dist` is ~H/2 + (H/dist)/2 (bottom of
+  // a full-height column); we place the prop's bottom there. Horizontal center
+  // (screenX) and size are unchanged, so collision footprint still matches.
+  if(s.kind==='prop'){
+    const colH = H/dist;                       // projected wall/column height at this depth
+    const floorY = Math.min(H, H/2 + colH/2);  // floor contact line (clamped to canvas)
+    top = floorY - h;                          // bottom of the prop sits on the floor line
+  }
+  // ---- per-column occlusion (anti-wallhack readability, FPS002-001) ----
+  // A sprite is only visible across the screen columns where it is nearer than
+  // the wall depth recorded in zbuf. We scan the sprite's horizontal span,
+  // find the contiguous visible run, and clip drawing to it. Fully-occluded
+  // sprites (now including the boss/Automaton) do not draw through walls.
+  // A small depth bias (0.25) keeps a sprite standing flush against a wall
+  // from flickering out, without revealing bodies behind solid geometry.
+  const colL=Math.max(0, Math.floor(left));
+  const colR=Math.min(W-1, Math.ceil(left+w));
+  let visStart=-1, visEnd=-1;
+  for(let cx=colL; cx<=colR; cx++){
+    if(dist <= zbuf[cx]+0.25){ if(visStart<0) visStart=cx; visEnd=cx; }
+    else if(visStart>=0 && visEnd>=0){ break; } // take the first contiguous visible run
+  }
+  if(visStart<0) return;                 // fully behind a wall — do not draw
+  const clipX=visStart, clipW=(visEnd-visStart)+1;
+  const shade=Math.max(0.3,1-dist/10);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(clipX, 0, clipW, H);          // restrict this sprite to its visible columns
+  ctx.clip();
+  if(s.kind==='boss') drawBoss(left,top,w,h,shade,s.ref);
+  else if(s.kind==='gate') drawGate(left,top,w,h,shade,s.ref);
+  else if(s.kind==='station') drawStation(left,top,w,h,shade,s.ref);
+  else if(s.kind==='drone') drawDrone(left,top,w,h,shade,s.ref);
+  else if(s.kind==='prop') drawProp(left,top,w,h,shade,s.ref);
+  else if(s.kind==='weapon') drawWeaponPickup(left,top,w,h,s.ref);
+  else drawItem(left,top,w,h,s.ref);
+  ctx.restore();
+}
+
+function drawProp(x,y,w,h,shade,pr){
+  // Fixed floor object (FPS000-VISUAL-003D). The sprite box is now bottom-
+  // anchored by drawSprite, so the FLOOR is at y+h. Every body grows UP from
+  // there and gets explicit floor contact (wide contact shadow + contact line
+  // + feet/base/skids) so it reads as installed equipment, not a billboard.
+  // Muted, no glow/HP/signal cues — never confusable with objectives/threats.
+  const sh=Math.max(0.3,shade);
+  const col=(r,g,b)=>'rgb('+(r*sh|0)+','+(g*sh|0)+','+(b*sh|0)+')';
+  const baseY=y+h;                       // the floor contact line for this prop
+  const t=pr.type;
+
+  // ---- ground contact shadow (drawn FIRST, under the body) ----
+  // A wide, soft, low ellipse-ish bar hugging the floor so the object plants.
+  ctx.fillStyle='rgba(0,0,0,0.34)';
+  ctx.fillRect(x+w*0.16, baseY-h*0.05, w*0.68, h*0.05);
+  ctx.fillStyle='rgba(0,0,0,0.18)';
+  ctx.fillRect(x+w*0.10, baseY-h*0.025, w*0.80, h*0.025);
+
+  if(t==='crate'){
+    // CRATE: low heavy cube planted on the floor, X-brace face, skid base
+    ctx.fillStyle=col(104,82,48);
+    ctx.fillRect(x+w*0.28, baseY-h*0.42, w*0.44, h*0.40);
+    ctx.fillStyle=col(70,54,30);
+    ctx.fillRect(x+w*0.28, baseY-h*0.42, w*0.44, h*0.04);          // top edge
+    ctx.fillStyle=col(132,106,64);                                  // X-brace
+    ctx.fillRect(x+w*0.30, baseY-h*0.30, w*0.40, h*0.03);
+    ctx.fillRect(x+w*0.48, baseY-h*0.40, w*0.04, h*0.36);
+    ctx.fillStyle=col(50,38,22);                                    // skid base on floor
+    ctx.fillRect(x+w*0.30, baseY-h*0.04, w*0.40, h*0.04);
+  } else if(t==='utilbox'){
+    // UTILITY BOX: small low box, clasp, planted (no float)
+    ctx.fillStyle=col(78,92,86);
+    ctx.fillRect(x+w*0.36, baseY-h*0.28, w*0.28, h*0.26);
+    ctx.fillStyle=col(50,62,58);
+    ctx.fillRect(x+w*0.36, baseY-h*0.28, w*0.28, h*0.04);
+    ctx.fillStyle=col(150,160,120);                                 // clasp
+    ctx.fillRect(x+w*0.47, baseY-h*0.18, w*0.06, h*0.05);
+    ctx.fillStyle=col(40,50,46);                                    // base lip
+    ctx.fillRect(x+w*0.36, baseY-h*0.03, w*0.28, h*0.03);
+  } else if(t==='pallet'){
+    // PALLET: very low, wide, slatted deck on block feet — heaviest floor read
+    ctx.fillStyle=col(92,74,46);
+    ctx.fillRect(x+w*0.16, baseY-h*0.20, w*0.68, h*0.10);          // deck
+    ctx.fillStyle=col(58,46,28);
+    for(let i=0;i<5;i++) ctx.fillRect(x+w*(0.18+i*0.135), baseY-h*0.20, w*0.025, h*0.10); // slats
+    ctx.fillStyle=col(44,34,20);                                    // block feet on floor
+    ctx.fillRect(x+w*0.18, baseY-h*0.08, w*0.10, h*0.08);
+    ctx.fillRect(x+w*0.45, baseY-h*0.08, w*0.10, h*0.08);
+    ctx.fillRect(x+w*0.72, baseY-h*0.08, w*0.10, h*0.08);
+  } else if(t==='rack'){
+    // RACK: tall, narrow, grounded on a base frame — vertical install
+    ctx.fillStyle=col(60,68,80);
+    ctx.fillRect(x+w*0.34, baseY-h*0.74, w*0.06, h*0.70);         // left rail
+    ctx.fillRect(x+w*0.60, baseY-h*0.74, w*0.06, h*0.70);         // right rail
+    ctx.fillStyle=col(48,56,66);
+    for(let i=0;i<4;i++) ctx.fillRect(x+w*0.34, baseY-h*(0.66-i*0.18), w*0.32, h*0.05); // shelves
+    ctx.fillStyle=col(86,96,108);
+    ctx.fillRect(x+w*0.40, baseY-h*0.62, w*0.08, h*0.03);
+    ctx.fillStyle=col(34,40,48);                                    // base frame planted
+    ctx.fillRect(x+w*0.32, baseY-h*0.06, w*0.36, h*0.06);
+  } else if(t==='datablock'){
+    // SERVER BLADE STACK: squat, dense slots, on a plinth
+    ctx.fillStyle=col(46,54,66);
+    ctx.fillRect(x+w*0.30, baseY-h*0.56, w*0.40, h*0.50);
+    ctx.fillStyle=col(28,34,42);
+    for(let i=0;i<6;i++) ctx.fillRect(x+w*0.32, baseY-h*(0.52-i*0.08), w*0.36, h*0.02); // slots
+    ctx.fillStyle=col(70,90,110);
+    ctx.fillRect(x+w*0.64, baseY-h*0.52, w*0.03, h*0.42);          // dim port column
+    ctx.fillStyle=col(30,36,44);                                    // plinth on floor
+    ctx.fillRect(x+w*0.28, baseY-h*0.06, w*0.44, h*0.06);
+  } else if(t==='cabinet'){
+    // CABINET: wide double-door, flush/grounded on short feet
+    ctx.fillStyle=col(74,84,90);
+    ctx.fillRect(x+w*0.22, baseY-h*0.56, w*0.56, h*0.50);
+    ctx.fillStyle=col(42,50,54);
+    ctx.fillRect(x+w*0.49, baseY-h*0.56, w*0.02, h*0.50);         // door split
+    ctx.fillStyle=col(118,128,134);
+    ctx.fillRect(x+w*0.42, baseY-h*0.34, w*0.03, h*0.10);         // handles
+    ctx.fillRect(x+w*0.55, baseY-h*0.34, w*0.03, h*0.10);
+    ctx.fillStyle=col(34,40,44);                                    // short feet on floor
+    ctx.fillRect(x+w*0.24, baseY-h*0.05, w*0.07, h*0.05);
+    ctx.fillRect(x+w*0.69, baseY-h*0.05, w*0.07, h*0.05);
+  } else if(t==='console'){
+    // CONSOLE: low desk + raised slanted screen, base-planted pedestal
+    ctx.fillStyle=col(66,60,74);
+    ctx.fillRect(x+w*0.24, baseY-h*0.34, w*0.52, h*0.28);         // desk body
+    ctx.fillStyle=col(50,46,60);
+    ctx.fillRect(x+w*0.30, baseY-h*0.54, w*0.40, h*0.20);         // raised screen back
+    ctx.fillStyle=col(96,150,170);                                 // cool screen face
+    ctx.fillRect(x+w*0.33, baseY-h*0.51, w*0.34, h*0.12);
+    ctx.fillStyle=col(40,36,48);                                    // base pedestal on floor
+    ctx.fillRect(x+w*0.28, baseY-h*0.06, w*0.44, h*0.06);
+  } else { // MACHINE: heavy tall block, grille, side conduit, base plate
+    ctx.fillStyle=col(76,76,84);
+    ctx.fillRect(x+w*0.26, baseY-h*0.58, w*0.44, h*0.52);
+    ctx.fillStyle=col(48,48,56);
+    ctx.fillRect(x+w*0.26, baseY-h*0.58, w*0.44, h*0.05);         // top cap
+    ctx.fillStyle=col(34,34,40);                                   // grille slots
+    for(let i=0;i<3;i++) ctx.fillRect(x+w*0.30, baseY-h*(0.40-i*0.10), w*0.30, h*0.04);
+    ctx.fillStyle=col(96,96,106);                                  // side conduit to floor
+    ctx.fillRect(x+w*0.70, baseY-h*0.50, w*0.05, h*0.46);
+    ctx.fillStyle=col(30,30,36);                                   // base plate on floor
+    ctx.fillRect(x+w*0.24, baseY-h*0.06, w*0.48, h*0.06);
+  }
+  // ---- bottom contact line (sharpens the floor join) ----
+  ctx.fillStyle='rgba(0,0,0,0.45)';
+  ctx.fillRect(x+w*0.22, baseY-h*0.01, w*0.56, h*0.01);
+}
+function drawGate(x,y,w,h,shade,gate){
+  // Signal Gate: a tall portal frame. Locked = dim red bars; open = bright
+  // teal with an animated energy fill (holographic seams).
+  const open=gate.open;
+  const frame = open ? '#1affc6' : '#7a2a2a';
+  ctx.fillStyle = open ? 'rgba(26,255,198,'+(0.85)+')' : 'rgba(122,42,42,0.9)';
+  // posts
+  ctx.fillRect(x+w*0.18,y+h*0.1,w*0.1,h*0.85);
+  ctx.fillRect(x+w*0.72,y+h*0.1,w*0.1,h*0.85);
+  // lintel
+  ctx.fillRect(x+w*0.18,y+h*0.1,w*0.64,h*0.1);
+  // inner field
+  if(open){
+    const t=performance.now()/200;
+    for(let i=0;i<5;i++){
+      const yy=y+h*0.22+ (h*0.6)*((i/5 + (t%1))%1);
+      ctx.fillStyle='rgba(120,255,220,'+(0.18+0.12*Math.sin(t+i))+')';
+      ctx.fillRect(x+w*0.3,yy,w*0.4,h*0.05);
+    }
+    ctx.fillStyle='rgba(26,255,198,0.12)';
+    ctx.fillRect(x+w*0.3,y+h*0.2,w*0.4,h*0.65);
+  } else {
+    ctx.fillStyle='rgba(60,20,20,0.55)';
+    ctx.fillRect(x+w*0.3,y+h*0.2,w*0.4,h*0.65);
+    // lock bar
+    ctx.fillStyle='#b04040';
+    ctx.fillRect(x+w*0.3,y+h*0.48,w*0.4,h*0.08);
+  }
+  // label tab — open shows GATE OPEN; locked names the remaining requirement
+  // on a second, smaller line so it fits the gate width on small screens.
+  ctx.textAlign='center';
+  if(open){
+    ctx.fillStyle='#1affc6';
+    const lh=Math.max(5,(h*0.12)|0);
+    ctx.font=lh+'px monospace';
+    ctx.fillText('GATE OPEN', x+w/2, y+h*0.06);
+  } else {
+    ctx.fillStyle='#ff8a6a';
+    const lh=Math.max(5,(h*0.11)|0);
+    ctx.font=lh+'px monospace';
+    ctx.fillText(G.signalCut?'GATE VALIDATING':'GATE LOCKED', x+w/2, y+h*0.05);
+    // requirement line (smaller) — uses existing read-only state via gateReqText
+    if(!G.signalCut){
+      const rl=Math.max(4,(h*0.085)|0);
+      ctx.font=rl+'px monospace';
+      ctx.fillStyle='#ffd0a0';
+      const autoAlive=G.boss.alive, staLeft=G.stations.filter(s=>s.alive).length;
+      const bits=[]; if(autoAlive) bits.push('AUTO'); if(staLeft>0) bits.push(staLeft+' STA');
+      ctx.fillText(bits.join(' + '), x+w/2, y+h*0.05+lh+1);
+    }
+  }
+}
+
+function drawStation(x,y,w,h,shade,st){
+  // Replicator Station — fixed signal infrastructure that projects drones into
+  // the reconstruction. Reads as a grounded relay: wide pedestal base, vertical
+  // signal mast, a pulsing amber command core that DIMS as HP drops, and small
+  // holographic projection rings. Deliberately distinct from drones (boxy bots
+  // with eyes) and the Signal Gate (tall two-post portal).
+  // DISPLAY ONLY: reads st.alive / st.hp / st.maxHp / st.flash / st.collapse,
+  // never writes them. All drawing stays inside the caller's FPS002-001 clip.
+  if(!st.alive){
+    // collapse: scatter of sparks for the brief collapse window
+    const n=10;
+    for(let i=0;i<n;i++){
+      const a=(i/n)*6.28, r=w*0.4*(1-st.collapse/0.5);
+      ctx.fillStyle = i%2 ? '#ffd86b' : '#ff7a3c';
+      ctx.fillRect(x+w/2+Math.cos(a)*r, y+h*0.6+Math.sin(a)*r, 3,3);
+    }
+    ctx.fillStyle='rgba(60,40,30,'+Math.max(0,st.collapse/0.5)+')';
+    ctx.fillRect(x+w*0.3,y+h*0.55,w*0.4,h*0.3);  // crumbling base
+    return;
+  }
+  const flash=st.flash>0;
+  const cx=x+w/2;
+  const frac=Math.max(0,Math.min(1,st.hp/st.maxHp));   // read-only health fraction
+  const big = w>26;   // only draw fine detail (rings/antenna) when large enough to read
+
+  // ---- wide dark pedestal base (grounds it as FIXED infrastructure) ----
+  ctx.fillStyle=flash?'#fff':'rgb('+(34*shade|0)+','+(52*shade|0)+','+(70*shade|0)+')';
+  ctx.fillRect(x+w*0.20, y+h*0.78, w*0.60, h*0.14);    // footing slab
+  ctx.fillStyle=flash?'#fff':'rgb('+(46*shade|0)+','+(70*shade|0)+','+(94*shade|0)+')';
+  ctx.fillRect(x+w*0.28, y+h*0.66, w*0.44, h*0.16);    // base housing
+
+  // ---- vertical signal mast (architectural, taller than a drone body) ----
+  ctx.fillStyle=flash?'#fff':'rgb('+(58*shade|0)+','+(88*shade|0)+','+(116*shade|0)+')';
+  ctx.fillRect(x+w*0.42, y+h*0.16, w*0.16, h*0.54);    // mast column
+  // mast edge highlights so it reads as a relay pylon, not a flat slab
+  ctx.fillStyle=flash?'#fff':'rgb('+(30*shade|0)+','+(48*shade|0)+','+(66*shade|0)+')';
+  ctx.fillRect(x+w*0.42, y+h*0.16, w*0.04, h*0.54);
+  ctx.fillRect(x+w*0.54, y+h*0.16, w*0.04, h*0.54);
+
+  // ---- holographic projection rings (the "projecting into reality" cue) ----
+  // Low-opacity, amber, expanding from the core. Faded by damage; skipped when
+  // the sprite is too small to read, to avoid clutter at distance.
+  if(big && !flash){
+    const t=performance.now()/600;
+    const coreY=y+h*0.40;
+    for(let i=0;i<2;i++){
+      const ph=((t + i*0.5) % 1);
+      const rr=w*0.18 + ph*w*0.30;
+      ctx.strokeStyle='rgba(255,'+(150+60*frac|0)+',60,'+((0.22*(1-ph))*(0.4+0.6*frac)).toFixed(2)+')';
+      ctx.lineWidth=1;
+      ctx.beginPath(); ctx.arc(cx, coreY, rr, 0, 6.28); ctx.stroke();
+    }
+  }
+
+  // ---- pulsing command core (amber = spawner) — DIMS with HP ----
+  const pulse=0.6+0.4*Math.sin(performance.now()/180);
+  const coreBright=(0.35+0.65*frac)*pulse;             // damaged core visibly dims
+  ctx.fillStyle=flash?'#fff':'rgba(255,'+(140+90*frac|0)+',40,'+coreBright.toFixed(2)+')';
+  ctx.fillRect(x+w*0.43, y+h*0.34, w*0.14, h*0.22);    // core slab on the mast
+  // bright inner pip
+  ctx.fillStyle=flash?'#fff':'rgba(255,235,170,'+(coreBright*0.9).toFixed(2)+')';
+  ctx.fillRect(x+w*0.46, y+h*0.40, w*0.08, h*0.09);
+
+  // ---- antenna tip with pulsing relay pip ----
+  if(big){
+    ctx.fillStyle=flash?'#fff':'rgb('+(70*shade|0)+','+(100*shade|0)+','+(130*shade|0)+')';
+    ctx.fillRect(x+w*0.48, y+h*0.06, w*0.04, h*0.12);  // antenna stalk
+    ctx.fillStyle=flash?'#fff':'rgba(120,220,255,'+(0.45+0.45*pulse).toFixed(2)+')'; // cyan relay tip
+    ctx.fillRect(x+w*0.45, y+h*0.03, w*0.10, h*0.05);
+  }
+
+  // ---- HP bar above (unchanged readout) ----
+  const bw=w*0.5;
+  ctx.fillStyle='#311'; ctx.fillRect(x+w*0.25,y+h*0.08,bw,4);
+  ctx.fillStyle = frac>0.5?'#5dff8c':frac>0.25?'#ffd86b':'#ff5a3c';
+  ctx.fillRect(x+w*0.25,y+h*0.08,bw*frac,4);
+}
+
+function drawBoss(x,y,w,h,shade,boss){
+  // Automaton — the command SOURCE of the signal network. Reads as a heavy
+  // command unit, not a generic enemy: broad armored torso, dark side armor,
+  // a bright central command core that DIMS as HP drops, a crown of signal fins,
+  // and a command pulse line. Red command palette (vs. the station's amber
+  // spawner palette and the gate's teal portal) keeps the four classes distinct.
+  // DISPLAY ONLY: reads boss.hp / boss.maxHp / boss.flash; never writes them.
+  // All drawing stays inside the caller's FPS002-001 clip (no save/restore here).
+  const flash=boss.flash>0;
+  const cx=x+w/2;
+  const frac=Math.max(0,Math.min(1,boss.hp/boss.maxHp));   // read-only health fraction
+  const big = w>30;   // fine detail only when large enough to read
+  const pulse=0.55+0.45*Math.sin(performance.now()/140);
+  // command red dims with damage so a hurt Automaton visibly fades
+  const cr=(120+90*frac)|0;
+
+  // ---- dark armored side panels (heavy shoulders) ----
+  ctx.fillStyle=flash?'#fff':'rgb('+(70*shade|0)+','+(18*shade|0)+','+(18*shade|0)+')';
+  ctx.fillRect(x+w*0.06, y+h*0.26, w*0.16, h*0.5);     // left armor
+  ctx.fillRect(x+w*0.78, y+h*0.26, w*0.16, h*0.5);     // right armor
+
+  // ---- broad command torso ----
+  ctx.fillStyle=flash?'#fff':'rgb('+(cr*shade|0)+','+(34*shade|0)+','+(34*shade|0)+')';
+  ctx.fillRect(x+w*0.20, y+h*0.18, w*0.60, h*0.62);
+  // darker chest frame edges so it reads as armored, not a flat block
+  ctx.fillStyle=flash?'#fff':'rgb('+(80*shade|0)+','+(20*shade|0)+','+(20*shade|0)+')';
+  ctx.fillRect(x+w*0.20, y+h*0.18, w*0.05, h*0.62);
+  ctx.fillRect(x+w*0.75, y+h*0.18, w*0.05, h*0.62);
+
+  // ---- crown of signal fins / command antenna (the "controller" cue) ----
+  if(big){
+    ctx.fillStyle=flash?'#fff':'rgb('+(90*shade|0)+','+(24*shade|0)+','+(24*shade|0)+')';
+    ctx.fillRect(x+w*0.30, y+h*0.06, w*0.05, h*0.12);  // left fin
+    ctx.fillRect(x+w*0.65, y+h*0.06, w*0.05, h*0.12);  // right fin
+    ctx.fillRect(x+w*0.475,y+h*0.02, w*0.05, h*0.16);  // center mast (tallest)
+    // pulsing command pip on the center mast
+    ctx.fillStyle=flash?'#fff':'rgba(255,'+(90+80*pulse|0)+',40,'+(0.6+0.4*pulse).toFixed(2)+')';
+    ctx.fillRect(x+w*0.46, y+h*0.0, w*0.08, h*0.05);
+  }
+
+  // ---- twin sensor eyes ----
+  ctx.fillStyle=flash?'#fff':'rgba(255,'+(180+50*frac|0)+',60,'+(0.7+0.3*frac).toFixed(2)+')';
+  ctx.fillRect(x+w*0.34, y+h*0.30, w*0.11, h*0.09);
+  ctx.fillRect(x+w*0.55, y+h*0.30, w*0.11, h*0.09);
+
+  // ---- bright central command core — DIMS with HP ----
+  const coreBright=(0.4+0.6*frac)*pulse;
+  // outer glow
+  ctx.fillStyle=flash?'#fff':'rgba(255,120,40,'+(coreBright*0.5).toFixed(2)+')';
+  ctx.fillRect(x+w*0.36, y+h*0.46, w*0.28, h*0.20);
+  // inner core
+  ctx.fillStyle=flash?'#fff':'rgba(255,'+(200*frac+40|0)+','+(60*frac|0)+','+coreBright.toFixed(2)+')';
+  ctx.fillRect(x+w*0.42, y+h*0.50, w*0.16, h*0.12);
+
+  // ---- command pulse line across the chest ----
+  ctx.fillStyle=flash?'#fff':'rgba(255,210,60,'+(0.5+0.5*pulse).toFixed(2)+')';
+  ctx.fillRect(x+w*0.24, y+h*0.70, w*0.52, h*0.04);
+
+  // ---- hp bar above (unchanged readout) ----
+  const bw=w*0.9;
+  ctx.fillStyle='#300'; ctx.fillRect(x+w*0.05,y-8,bw,4);
+  ctx.fillStyle='#f33'; ctx.fillRect(x+w*0.05,y-8,bw*frac,4);
+}
+function drawDrone(x,y,w,h,shade,d){
+  // Collapse (signal cut): dissolve into falling sparks.
+  if(d._collapsing){
+    const k=Math.max(0,d.collapse/0.6);
+    for(let i=0;i<8;i++){
+      const a=(i/8)*6.28; const r=w*0.35*(1-k);
+      ctx.fillStyle = i%2? 'rgba(120,220,255,'+k+')':'rgba(200,240,255,'+k+')';
+      ctx.fillRect(x+w/2+Math.cos(a)*r, y+h*0.5+Math.sin(a)*r - (1-k)*h*0.3, 3,3);
+    }
+    return;
+  }
+  // State drives the accent color (what the drone BELIEVES):
+  //   normal = teal/calm, confused = amber/flicker, hunting = red/alert
+  let accent, flicker=1;
+  if(d.state==='hunting'){ accent='220,70,60'; }
+  else if(d.state==='confused'){ accent='220,190,60'; flicker=0.55+0.45*Math.sin(d.bob*2); }
+  else { accent='90,200,180'; }
+  const body = d.flash>0 ? '#fff' : 'rgba('+accent+','+flicker.toFixed(2)+')';
+  // slight vertical bob; hunting leans forward (posture)
+  const bobY = Math.sin(d.bob)* (h*0.03);
+  const yy = y + bobY;
+  const lean = d.state==='hunting' ? w*0.04 : 0;
+
+  // Archetype drives the SILHOUETTE (what the drone IS):
+  if(d.archetype==='security'){
+    // bulky, wide, armored — biggest body, shoulder blocks
+    ctx.fillStyle=body;
+    ctx.fillRect(x+w*0.2+lean, yy+h*0.22, w*0.6, h*0.56);   // wide torso
+    ctx.fillStyle = d.flash>0?'#fff':'rgba('+accent+',0.7)';
+    ctx.fillRect(x+w*0.12+lean, yy+h*0.28, w*0.12, h*0.3);  // L shoulder
+    ctx.fillRect(x+w*0.76+lean, yy+h*0.28, w*0.12, h*0.3);  // R shoulder
+    // single wide visor
+    ctx.fillStyle='#fff';
+    ctx.fillRect(x+w*0.32+lean, yy+h*0.34, w*0.36, h*0.08);
+  } else if(d.archetype==='scout'){
+    // small, sleek, single eye, antenna — narrow diamond-ish body
+    ctx.fillStyle=body;
+    ctx.fillRect(x+w*0.34+lean, yy+h*0.3, w*0.32, h*0.4);   // slim body
+    ctx.fillRect(x+w*0.42+lean, yy+h*0.16, w*0.16, h*0.12); // head
+    ctx.fillStyle = d.flash>0?'#fff':'rgba('+accent+',0.9)';
+    ctx.fillRect(x+w*0.48+lean, yy+h*0.05, w*0.04, h*0.12); // antenna
+    ctx.fillStyle='#fff';
+    ctx.fillRect(x+w*0.45+lean, yy+h*0.36, w*0.1, h*0.08);  // single eye
+  } else {
+    // worker: boxy mid-size with two eyes and tool arms (default)
+    ctx.fillStyle=body;
+    ctx.fillRect(x+w*0.26+lean, yy+h*0.26, w*0.48, h*0.5);  // torso
+    ctx.fillStyle='#fff';
+    ctx.fillRect(x+w*0.36+lean, yy+h*0.34, w*0.1, h*0.1);   // eyes
+    ctx.fillRect(x+w*0.54+lean, yy+h*0.34, w*0.1, h*0.1);
+    ctx.fillStyle = d.flash>0?'#fff':'rgba('+accent+',0.8)';
+    ctx.fillRect(x+w*0.28+lean, yy+h*0.78, w*0.12, h*0.12); // legs/tools
+    ctx.fillRect(x+w*0.6+lean,  yy+h*0.78, w*0.12, h*0.12);
+  }
+  // small HP pip bar above (only if damaged) — keeps targets fair/readable
+  if(d.hp < d.maxHp){
+    const bw=w*0.5;
+    ctx.fillStyle='rgba(40,10,10,0.8)'; ctx.fillRect(x+w*0.25, yy+h*0.06, bw, 3);
+    const frac=Math.max(0,d.hp/d.maxHp);
+    ctx.fillStyle = frac>0.5?'#7dff9c':frac>0.25?'#ffd86b':'#ff5a3c';
+    ctx.fillRect(x+w*0.25, yy+h*0.06, bw*frac, 3);
+  }
+}
+function drawWeaponPickup(x,y,w,h,wp){
+  ctx.fillStyle='#2cf';
+  ctx.fillRect(x+w*0.1,y+h*0.4,w*0.8,h*0.2);
+  ctx.fillStyle='#fff';
+  ctx.font=Math.max(6,h*0.4|0)+'px monospace'; ctx.textAlign='center';
+  const lbl=wp.type==='rifle'?'RFL':wp.type==='burst'?'BST':'WPN';
+  ctx.fillText(lbl,x+w/2,y-2);
+}
+function drawItem(x,y,w,h,it){
+  // IFAK: dedicated tan/green pouch art — no red box, no Red Cross symbol.
+  if(it.type==='health_ifak'){
+    const px=x+w*0.22, py=y+h*0.28, pw=w*0.56, ph=h*0.52;
+    ctx.fillStyle='#6b7a4b';                       // olive/tan pouch body
+    ctx.fillRect(px,py,pw,ph);
+    ctx.fillStyle='#8a9a63';                       // lighter flap
+    ctx.fillRect(px,py,pw,ph*0.3);
+    ctx.fillStyle='#3f4a2c';                        // strap line
+    ctx.fillRect(px,py+ph*0.45,pw,ph*0.08);
+    // simple diagonal aid stripe (not a cross)
+    ctx.fillStyle='#dfe8c8';
+    ctx.fillRect(px+pw*0.18,py+ph*0.58,pw*0.64,ph*0.12);
+    // label
+    ctx.fillStyle='#eef6dd'; ctx.textAlign='center';
+    ctx.font=Math.max(5,(h*0.16)|0)+'px monospace';
+    ctx.fillText('IFAK', x+w/2, y+h*0.24);
+    return;
+  }
+  let c='#0f0';
+  switch(it.type){
+    case 'health': c='#3f6'; break;
+    case 'stim': c='#f6c'; break;
+    case 'armor': c='#48f'; break;
+    case 'recon': c='#8cf'; break;
+    case 'ammo_pistol': c='#fd0'; break;
+    case 'ammo_rifle': c='#fa0'; break;
+    case 'battery': c='#0fc'; break;
+  }
+  ctx.fillStyle=c;
+  ctx.fillRect(x+w*0.25,y+h*0.3,w*0.5,h*0.5);
+  // generic health uses a plus mark; this is the non-IFAK pickup only
+  if(it.type==='health'){ ctx.fillStyle='#0a3'; ctx.fillRect(x+w*0.45,y+h*0.36,w*0.1,h*0.38); ctx.fillRect(x+w*0.33,y+h*0.5,w*0.34,h*0.1); }
+}
+
+function drawTracers(){
+  for(const sh of G.shots){
+    // project both ends — simple: draw a vertical flash near center
+  }
+  // muzzle flash drawn in viewmodel
+}
+
+function drawViewmodel(){
+  const wk=G.weapons[G.curWeapon]; const w=WEAPONS[wk];
+  const cx=W/2, baseY=H;
+  // muzzle flash
+  if(G.muzzle>0){
+    ctx.fillStyle='rgba(255,230,120,0.9)';
+    ctx.beginPath(); ctx.arc(cx+18, baseY-46, 10*(G.muzzle/0.07), 0, 6.28); ctx.fill();
+  }
+  // simple gun shapes bottom-center
+  ctx.fillStyle='#222';
+  if(wk==='pistol'){ ctx.fillRect(cx+4,baseY-44,16,40); ctx.fillRect(cx+4,baseY-44,30,12); }
+  else if(wk==='rifle'){ ctx.fillRect(cx+2,baseY-50,40,12); ctx.fillRect(cx+8,baseY-50,12,44); ctx.fillStyle='#444'; ctx.fillRect(cx+30,baseY-49,18,6); }
+  else { ctx.fillStyle='#134'; ctx.fillRect(cx-4,baseY-46,46,16); ctx.fillStyle='#0cf'; ctx.fillRect(cx+38,baseY-44,8,12); }
+  // crosshair
+  ctx.fillStyle='rgba(180,255,200,0.8)';
+  ctx.fillRect(cx-5,H/2,10,1); ctx.fillRect(cx,H/2-5,1,10);
+}
+
+/* ============================================================
+   HUD
+   ============================================================ */
+/* Signal Gate requirement text — DISPLAY ONLY. Reads existing state
+   (G.boss.alive, living station count, G.gate.open) to explain WHY the gate
+   is locked. It never mutates state and never decides the unlock; the unlock
+   stays in checkSignalNetwork() (!boss.alive && stationsLeft===0). The "clear"
+   branch keys off that same expression so text and logic can't disagree.
+   `style` = 'hud' (compact, fits the nowrap HUD strip) or 'full' (verbose,
+   for the centered prompt and the gate sprite where there is room). */
+function gateReqText(style){
+  if(G.gate && G.gate.open) return style==='hud' ? 'GATE OPEN' : 'GATE OPEN — PRESS A';
+  const autoAlive = G.boss.alive;
+  const staLeft = G.stations.filter(s=>s.alive).length;
+  if(!autoAlive && staLeft===0){
+    // both sources gone — matches the unlock condition exactly
+    return style==='hud' ? 'VALIDATING' : 'GATE VALIDATING';
+  }
+  const parts=[];
+  if(autoAlive) parts.push(style==='hud' ? 'AUTO' : 'AUTO ACTIVE');
+  if(staLeft>0) parts.push(style==='hud' ? staLeft+' STA' : staLeft+' STA REMAINING');
+  const reason = parts.join(' · ');
+  return style==='hud' ? 'LCK '+reason : 'GATE LOCKED — '+reason;
+}
+
+/* Compact sector tag for the HUD location module (FPS000-QUALITY-006A).
+   Maps the verbose level name to a short tag so the strip never crowds.
+   Display-only; reads G.level.name / G.levelIndex. */
+function compactSectorName(){
+  const i=G.levelIndex;
+  const tags=['S1 · SIG BAY','S2 · STORAGE','S3 · REACTOR'];
+  if(tags[i]) return tags[i];
+  return 'S'+(i+1);
+}
+/* Build one compact objective chip. on=true → active/locked (amber),
+   on=false → cleared (green). Display-only. */
+function chip(label, value, on){
+  const cls = on ? 'chip on' : 'chip off';
+  const v = (value===undefined||value===null||value==='') ? '' : ' '+value;
+  return '<span class="'+cls+'">'+label+v+'</span>';
+}
+
+function updateHUD(){
+  const wk=G.weapons[G.curWeapon]; const w=WEAPONS[wk];
+  const top=document.getElementById('hudTop');
+  const bot=document.getElementById('hudBot');
+
+  // color language
+  const HP_COL = G.health<30 ? '#ff5b5b' : '#5dff8c';
+  const AR_COL = '#49c6ff';
+  const hpPct = Math.max(0, Math.min(100, G.health/2)); // 0..200% -> bar 0..100 width
+  const arPct = Math.max(0, Math.min(100, G.armor/2));
+
+  const bar=(col,pct)=>'<span class="bar"><i style="width:'+pct+'%;background:'+col+';box-shadow:0 0 4px '+col+'"></i></span>';
+
+  // ammo / battery readout with obvious recharge state
+  let ammoStr;
+  if(w.energy){
+    if(G.recharge>0){
+      ammoStr='<span class="lbl">BAT</span> <b style="color:#2fe6ff">'+Math.round(w.ammo)+'%</b> '+
+              '<span class="warn">⟳ '+G.recharge.toFixed(1)+'s</span>';
+    } else {
+      ammoStr='<span class="lbl">BAT</span> <b style="color:#2fe6ff">'+Math.round(w.ammo)+'%</b>';
+    }
+  } else {
+    const lowCol = w.ammo<=Math.ceil(w.max*0.2) ? '#ffb347' : '#ffe27a';
+    ammoStr='<span class="lbl">AMMO</span> <b style="color:'+lowCol+'">'+w.ammo+'/'+w.max+'</b>';
+  }
+
+  // TOP ROW: [HP+AR cluster] [weapon cluster] [ammo cluster] — space-between
+  top.innerHTML=
+    '<span class="grp">'+
+      '<span class="stat"><span class="lbl">HP</span>'+bar(HP_COL,hpPct)+'<span class="val" style="color:'+HP_COL+'">'+Math.round(G.health)+'%</span></span>'+
+      '<span class="stat"><span class="lbl">AR</span>'+bar(AR_COL,arPct)+'<span class="val" style="color:'+AR_COL+'">'+Math.round(G.armor)+'%</span></span>'+
+    '</span>'+
+    '<span class="grp mid"><b>'+w.name+'</b> <span class="lbl">'+(G.curWeapon+1)+'/'+G.weapons.length+'</span></span>'+
+    '<span class="grp right">'+ammoStr+'</span>';
+
+  // BOTTOM ROW: [compact location tag] .......... [objective chips cluster]
+  // Objective chips are compact (no full gate reason here — that stays in the
+  // prompt and the gate label). Right cluster is flex-shrink:0 so it never clips.
+  const autoChip = chip('AUTO', '', G.boss.alive);                       // amber while alive
+  const stTotal=G.stations.length;
+  const stLeft=G.stations.filter(s=>s.alive).length;
+  const staChip = chip('STA', stLeft+'/'+stTotal, stLeft>0);
+  const drnChip = chip('DRN', G.drones.length, G.drones.length>0);
+  let gateChip='';
+  if(G.gate){
+    if(G.gate.open) gateChip = chip('GATE', 'OPEN', false);
+    else if(G.signalCut) gateChip = chip('GATE', 'VAL', false);
+    else gateChip = chip('GATE', 'LCK', true);
+  }
+  bot.innerHTML=
+    '<span class="grp loc">'+compactSectorName()+'</span>'+
+    '<span class="grp right">'+autoChip+staChip+drnChip+gateChip+'</span>';
+
+  // prompt — Signal Gate takes priority, then doors, then baton/pickup
+  const pe=document.getElementById('prompt');
+  let txt='';
+  const g=nearGate();
+  if(g && g.open) txt='Press A to ENTER SIGNAL GATE';
+  else if(g && !g.open) txt=gateReqText('full');
+  else if(nearestDoor()) txt='Press A to OPEN DOOR';
+  else { const wp=nearestWeaponPickup(); if(wp) txt='B: SIGNAL BATON — take '+wp.type.toUpperCase(); }
+  if(txt){ pe.textContent=txt; pe.style.display='block'; } else pe.style.display='none';
+}
+
+/* ============================================================
+   MAIN LOOP
+   ============================================================ */
+let last=performance.now();
+function frame(now){
+  let dt=(now-last)/1000; last=now;
+  if(dt>0.05) dt=0.05;
+  // gather all input sources into one normalized state
+  pollGamepad();
+  composeInput();
+
+  // Start toggles pause/resume from either state
+  if(input.justPressed.start){
+    if(G.state==='play') pauseGame();
+    else if(G.state==='pause') resumeGame();
+  }
+
+  if(G.state==='play'){
+    handleActions(dt);
+    if(G.state==='play'){ // handleActions may pause
+      updateMovement(dt);
+      updateDoors(dt);
+      updateDrones(dt);
+      // Automaton commands the Replicator Stations. Every 10s, while the
+      // Automaton is alive and at least one station is alive, a living station
+      // releases a randomized drone. Sector 3 may fire two stations per command
+      // if the active drone count is below cap.
+      if(G.boss.alive && !G.signalCut){
+        G.spawnTimer-=dt;
+        if(G.spawnTimer<=0){
+          commandStations();
+          G.spawnTimer=10;
+        }
+      }
+      // station flash/collapse feedback timers
+      for(const st of G.stations){ if(st.flash>0) st.flash-=dt; if(st.collapse>0) st.collapse-=dt; }
+      if(G.fireCooldown>0) G.fireCooldown-=dt;
+      if(G.punchCd>0) G.punchCd-=dt;
+      if(G.recharge>0){ G.recharge-=dt; if(G.recharge<0) G.recharge=0; }
+      if(G.muzzle>0) G.muzzle-=dt;
+      if(G.boss.flash>0) G.boss.flash-=dt;
+      for(const sh of G.shots) sh.life-=dt;
+      G.shots=G.shots.filter(s=>s.life>0);
+      checkPickups();
+    }
+    render();
+    updateHUD();
+  }
+
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   SCREEN HELPERS
+   ============================================================ */
+function show(id){ document.getElementById(id).classList.remove('hidden'); }
+function hide(id){ document.getElementById(id).classList.add('hidden'); }
+function pauseGame(){ if(G.state==='play'){ G.state='pause'; show('pauseScreen'); if(typeof clearTouchControls==='function') clearTouchControls(); } }
+function resumeGame(){ if(G.state==='pause'){ hide('pauseScreen'); G.state='play'; last=performance.now(); } }
+
+document.getElementById('startBtn').onclick=()=>{ if(isTouch()) touchEl.style.display='block'; startLevel(0); };
+document.getElementById('resumeBtn').onclick=resumeGame;
+document.getElementById('overBtn').onclick=()=>{
+  if(G._advance){ startLevel(G.levelIndex+1); }
+  else { startLevel(G.levelIndex); }
+};
+document.getElementById('winBtn').onclick=()=>{ startLevel(0); };
+
+bindTouch();
+// Desktop / non-touch devices reclaim the control-band space for the canvas.
+if(!isTouch()){ document.body.classList.add('notouch'); }
+
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
