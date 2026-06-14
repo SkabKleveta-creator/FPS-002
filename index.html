@@ -333,7 +333,12 @@ document.addEventListener('touchmove',e=>{ e.preventDefault(); },{passive:false}
 /* ---------- gamepad layer ---------- */
 function pollGamepad(){
   for(const k of KEYS) pad[k]=false;
-  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  // getGamepads can exist but THROW in sandboxed/permission-restricted iframes
+  // (Permissions-Policy "gamepad" disallowed). Guard the call so a blocked
+  // policy degrades to "no gamepad" instead of crashing the frame loop.
+  let pads;
+  try { pads = navigator.getGamepads ? navigator.getGamepads() : []; }
+  catch(_) { return; }
   const gp = pads && pads[0];
   if(!gp) return;
   const dz=0.35;
@@ -623,8 +628,8 @@ const LEVELS = [
 const WEAPONS = {
   pistol:{ name:"PISTOL", clip:12, max:12, ammo:12, fireDelay:0.21, dmg:34, spread:0, pellets:1, energy:false },
   rifle:{ name:"RIFLE", clip:30, max:30, ammo:0, fireDelay:0.08, dmg:22, spread:0.03, pellets:1, energy:false },
-  burst:{ name:"BURST CHARGE", clip:100, max:100, ammo:0, fireDelay:0.45, dmg:14, spread:0.22, pellets:8, energy:true,
-          burstCostPct:18, rechargeTime:3 },
+  burst:{ name:"BURST CHARGE", clip:8, max:8, ammo:0, fireDelay:0.45, dmg:14, spread:0.22, pellets:8, energy:true,
+          reloadTime:3 },
 };
 
 /* ============================================================
@@ -908,7 +913,7 @@ function startLevel(idx){
   G.curWeapon = 0;
   WEAPONS.pistol.ammo = WEAPONS.pistol.max;   // 12
   WEAPONS.rifle.ammo  = WEAPONS.rifle.max;    // 30
-  WEAPONS.burst.ammo  = WEAPONS.burst.max;    // 100%
+  WEAPONS.burst.ammo  = WEAPONS.burst.max;    // 8 rounds
   // Generated/cloned sectors carry no weapon pickups (full loadout owns all),
   // so there are no redundant weapon prompts to convert.
   // boss
@@ -1072,14 +1077,13 @@ function tryFire(){
   const wk=G.weapons[G.curWeapon]; const w=WEAPONS[wk];
   if(G.fireCooldown>0) return;
   if(w.energy){
-    // Burst Charge: battery % IS the ammo. Each burst consumes burstCostPct.
-    // Recharge is purely a 3s timing gate between bursts; it never grants
-    // battery. If battery is below one burst's cost, the weapon is empty and
-    // the player must find a battery pickup.
-    if(G.recharge>0) return;                 // still in timing gate
-    if(w.ammo < w.burstCostPct) return;       // depleted — needs a pickup, no free charge
-    w.ammo -= w.burstCostPct;
-    G.recharge = w.rechargeTime;              // start the 3s gate after firing
+    // Burst Charge: 8-shot magazine. Each trigger pull fires one 8-pellet burst
+    // and consumes 1 round. No cooldown between shots beyond normal fireDelay.
+    // When magazine reaches 0, weapon enters a 3s reload state, then refills to 8.
+    if(G.recharge>0) return;                 // reloading — wait
+    if(w.ammo<=0) return;                    // empty and not yet reloading (edge guard)
+    w.ammo--;
+    if(w.ammo<=0) G.recharge = w.reloadTime; // magazine empty → start 3s reload
   } else {
     if(w.ammo<=0) return;
     w.ammo--;
@@ -1242,7 +1246,7 @@ function applyItem(it){
     case 'recon': G.armor=Math.min(200,G.armor+60); break;
     case 'ammo_pistol': WEAPONS.pistol.ammo=Math.min(WEAPONS.pistol.max, WEAPONS.pistol.ammo+(3+(Math.random()*4|0))); break;
     case 'ammo_rifle': WEAPONS.rifle.ammo=Math.min(WEAPONS.rifle.max, WEAPONS.rifle.ammo+(8+(Math.random()*8|0))); break;
-    case 'battery': WEAPONS.burst.ammo=Math.min(WEAPONS.burst.max, WEAPONS.burst.ammo+(20+(Math.random()*20|0))); break;
+    case 'battery': WEAPONS.burst.ammo=WEAPONS.burst.max; G.recharge=0; break;
   }
 }
 
@@ -1283,7 +1287,7 @@ function handleActions(dt){
     if(wp){ wp.taken=true; if(!G.owned[wp.type]){ G.owned[wp.type]=true; G.weapons.push(wp.type);
               G.curWeapon=G.weapons.length-1; }
             if(wp.type==='rifle') WEAPONS.rifle.ammo=Math.max(WEAPONS.rifle.ammo,30);
-            if(wp.type==='burst') WEAPONS.burst.ammo=Math.max(WEAPONS.burst.ammo,100);
+            if(wp.type==='burst') WEAPONS.burst.ammo=Math.max(WEAPONS.burst.ammo,WEAPONS.burst.max);
     } else { batonStrike(); }
   }
   // Select: cycle weapon
@@ -1348,7 +1352,21 @@ function updateDoors(dt){
 /* ============================================================
    RAYCAST RENDER
    ============================================================ */
-const FOV = Math.PI/3;
+/* FPS002-DESKTOP-VISUAL-001 — presentation-aware FOV.
+   The canvas renders at a fixed 320x200 (1.6:1) frame. On phones (near-square
+   #wrap) object-fit:contain shows it reasonably zoomed; on wide laptop/tablet
+   viewports the same 60° horizontal FOV gets spread across far more width, so
+   rooms feel empty and sprites feel small. Narrowing the FOV on non-touch
+   (desktop/laptop) presentations zooms the world in — walls AND sprites grow
+   together because both the ray fan (render) and sprite projection (drawSprite)
+   read this single value via Math.tan(FOV/2), so they stay perfectly coherent
+   (no hit-detection or occlusion drift). Touch devices keep the exact original
+   Math.PI/3, so MOBILE IS BIT-FOR-BIT UNCHANGED. Hitscan/rayWallDist do not
+   read FOV, so combat is unaffected. Computed once at load (matches the
+   one-time notouch layout decision) — zero per-frame cost. */
+const FOV_MOBILE = Math.PI/3;            // 60° — original, unchanged on touch
+const FOV_DESKTOP = Math.PI/3.9;         // ~46° — slightly zoomed-in for desktop/tablet presence
+const FOV = (typeof isTouch==='function' && isTouch()) ? FOV_MOBILE : FOV_DESKTOP;
 const NUMRAYS = W;             // 1 ray per column
 const zbuf = new Float32Array(W);
 
@@ -1689,36 +1707,94 @@ function drawProp(x,y,w,h,shade,pr){
   ctx.fillRect(x+w*0.22, baseY-h*0.01, w*0.56, h*0.01);
 }
 function drawGate(x,y,w,h,shade,gate){
-  // Signal Gate: a tall portal frame. Locked = dim red bars; open = bright
-  // teal with an animated energy fill (holographic seams).
+  // Signal Gate — a reality-transfer APERTURE, not a door. (FPS002-GATE-TELEPORT)
+  // Reads as a validated transit node: a tall oval portal ring with a layered
+  // inner energy field and teleport shimmer, distinct in shape AND hue from the
+  // station (amber mast), Automaton (red command torso), drones, and props.
+  //   locked      (!open && !signalCut) = dim corrupted field, red-amber ring
+  //   validating  (!open &&  signalCut) = unstable forming aperture (teal+flicker)
+  //   open        ( open)               = bright readable teal portal, invites A
+  // DISPLAY ONLY: reads gate.open / G.signalCut / G.boss.alive / station count;
+  // never writes state, never decides the unlock. All status text strings are
+  // preserved verbatim. Draws only inside the caller's FPS002-001 clip (no
+  // save/restore imbalance here); shimmer uses existing performance.now() timing.
   const open=gate.open;
-  const frame = open ? '#1affc6' : '#7a2a2a';
-  ctx.fillStyle = open ? 'rgba(26,255,198,'+(0.85)+')' : 'rgba(122,42,42,0.9)';
-  // posts
-  ctx.fillRect(x+w*0.18,y+h*0.1,w*0.1,h*0.85);
-  ctx.fillRect(x+w*0.72,y+h*0.1,w*0.1,h*0.85);
-  // lintel
-  ctx.fillRect(x+w*0.18,y+h*0.1,w*0.64,h*0.1);
-  // inner field
-  if(open){
-    const t=performance.now()/200;
-    for(let i=0;i<5;i++){
-      const yy=y+h*0.22+ (h*0.6)*((i/5 + (t%1))%1);
-      ctx.fillStyle='rgba(120,255,220,'+(0.18+0.12*Math.sin(t+i))+')';
-      ctx.fillRect(x+w*0.3,yy,w*0.4,h*0.05);
-    }
-    ctx.fillStyle='rgba(26,255,198,0.12)';
-    ctx.fillRect(x+w*0.3,y+h*0.2,w*0.4,h*0.65);
-  } else {
-    ctx.fillStyle='rgba(60,20,20,0.55)';
-    ctx.fillRect(x+w*0.3,y+h*0.2,w*0.4,h*0.65);
-    // lock bar
-    ctx.fillStyle='#b04040';
-    ctx.fillRect(x+w*0.3,y+h*0.48,w*0.4,h*0.08);
+  const validating = !open && G.signalCut;
+  const t=performance.now();
+  const big = w>26;                              // fine detail only when readable
+  // aperture geometry — tall oval centered in the sprite box
+  const ax=x+w*0.30, aw=w*0.40;                  // aperture x / width
+  const ay=y+h*0.14, ah=h*0.74;                  // aperture y / height
+  const acx=ax+aw/2, acy=ay+ah/2, arx=aw/2, ary=ah/2;
+
+  // ---- ring palette by state ----
+  let ringR,ringG,ringB, fieldR,fieldG,fieldB;
+  if(open){            ringR=26;  ringG=255; ringB=198;  fieldR=120; fieldG=255; fieldB=220; }
+  else if(validating){ ringR=90;  ringG=220; ringB=200;  fieldR=80;  fieldG=200; fieldB=190; }
+  else {               ringR=150; ringG=70;  ringB=60;   fieldR=90;  fieldG=40;  fieldB=40;  }
+  const sh=Math.max(0.4,shade);
+  const ring='rgb('+(ringR*sh|0)+','+(ringG*sh|0)+','+(ringB*sh|0)+')';
+
+  // ---- outer transit ring (bold oval frame — the portal silhouette) ----
+  // Concentric stroked ovals so it reads as an aperture, not a rectangular frame.
+  ctx.lineWidth=Math.max(2,(w*0.05)|0);
+  ctx.strokeStyle=ring;
+  ctx.beginPath(); ctx.ellipse(acx,acy,arx,ary,0,0,6.28); ctx.stroke();
+  if(big){
+    ctx.lineWidth=1;
+    ctx.strokeStyle='rgba('+ringR+','+ringG+','+ringB+','+(open?0.55:validating?0.4:0.3)+')';
+    ctx.beginPath(); ctx.ellipse(acx,acy,arx*0.78,ary*0.84,0,0,6.28); ctx.stroke();
   }
-  // label tab — open shows GATE OPEN; locked names the remaining requirement
-  // on a second, smaller line so it fits the gate width on small screens.
+
+  // ---- inner energy field (clipped to the aperture oval) ----
+  ctx.save();
+  ctx.beginPath(); ctx.ellipse(acx,acy,arx*0.92,ary*0.92,0,0,6.28); ctx.clip();
+  // base field wash
+  const baseA = open?0.30 : validating?0.22 : 0.34;
+  ctx.fillStyle='rgba('+fieldR+','+fieldG+','+fieldB+','+baseA+')';
+  ctx.fillRect(ax,ay,aw,ah);
+  if(open){
+    // bright stable portal: rising teleport scanlines + soft transfer glow
+    const tt=t/200;
+    for(let i=0;i<6;i++){
+      const yy=ay + ah*((i/6 + (tt%1))%1);
+      ctx.fillStyle='rgba(150,255,230,'+(0.16+0.12*Math.sin(tt+i))+')';
+      ctx.fillRect(ax, yy, aw, Math.max(1,h*0.035));
+    }
+    ctx.fillStyle='rgba(26,255,198,0.16)';
+    ctx.fillRect(ax,ay+ah*0.30,aw,ah*0.40);     // central transfer glow
+  } else if(validating){
+    // unstable FORMING aperture: flickering partial-width scanlines (gaps = forming)
+    const tt=t/120;
+    for(let i=0;i<5;i++){
+      const fl=0.10+0.18*Math.abs(Math.sin(tt*1.3+i*1.7));
+      const yy=ay + ah*((i/5 + (tt*0.6%1))%1);
+      ctx.fillStyle='rgba(120,230,210,'+fl.toFixed(2)+')';
+      const seg=aw*(0.4+0.4*Math.abs(Math.sin(tt+i)));
+      ctx.fillRect(ax+(aw-seg)/2, yy, seg, Math.max(1,h*0.03));
+    }
+  } else {
+    // LOCKED: dim corrupted field + horizontal interruption bar
+    const tt=t/600;
+    ctx.fillStyle='rgba(60,20,20,0.5)';
+    ctx.fillRect(ax,ay,aw,ah);
+    for(let i=0;i<3;i++){
+      const yy=ay + ah*(0.2+0.3*i) + Math.sin(tt+i)*h*0.01;
+      ctx.fillStyle='rgba(150,70,60,'+(0.18+0.06*Math.sin(tt*2+i))+')';
+      ctx.fillRect(ax, yy, aw, Math.max(1,h*0.02));
+    }
+    ctx.fillStyle='rgba(176,64,64,0.9)';         // interruption bar (not validated)
+    ctx.fillRect(ax, acy-h*0.035, aw, h*0.07);
+  }
+  ctx.restore();
+
+  // ---- base node plinth (grounds the aperture as a transit installation) ----
+  ctx.fillStyle=ring;
+  ctx.fillRect(x+w*0.24, y+h*0.88, w*0.52, h*0.05);
+
+  // ---- status labels — PRESERVED VERBATIM (text + positions + logic) ----
   ctx.textAlign='center';
+  ctx.globalAlpha=1;
   if(open){
     ctx.fillStyle='#1affc6';
     const lh=Math.max(5,(h*0.12)|0);
@@ -1729,7 +1805,7 @@ function drawGate(x,y,w,h,shade,gate){
     const lh=Math.max(5,(h*0.11)|0);
     ctx.font=lh+'px monospace';
     ctx.fillText(G.signalCut?'GATE VALIDATING':'GATE LOCKED', x+w/2, y+h*0.05);
-    // requirement line (smaller) — uses existing read-only state via gateReqText
+    // requirement line (smaller) — uses existing read-only state
     if(!G.signalCut){
       const rl=Math.max(4,(h*0.085)|0);
       ctx.font=rl+'px monospace';
@@ -2068,14 +2144,15 @@ function updateHUD(){
 
   const bar=(col,pct)=>'<span class="bar"><i style="width:'+pct+'%;background:'+col+';box-shadow:0 0 4px '+col+'"></i></span>';
 
-  // ammo / battery readout with obvious recharge state
+  // ammo / magazine readout with reload state
   let ammoStr;
   if(w.energy){
     if(G.recharge>0){
-      ammoStr='<span class="lbl">BAT</span> <b style="color:#2fe6ff">'+Math.round(w.ammo)+'%</b> '+
-              '<span class="warn">⟳ '+G.recharge.toFixed(1)+'s</span>';
+      ammoStr='<span class="lbl">MAG</span> <b style="color:#ff5b5b">0/'+w.max+'</b> '+
+              '<span class="warn">RELOADING '+G.recharge.toFixed(1)+'s</span>';
     } else {
-      ammoStr='<span class="lbl">BAT</span> <b style="color:#2fe6ff">'+Math.round(w.ammo)+'%</b>';
+      const lowCol = w.ammo<=2 ? '#ffb347' : '#2fe6ff';
+      ammoStr='<span class="lbl">MAG</span> <b style="color:'+lowCol+'">'+w.ammo+'/'+w.max+'</b>';
     }
   } else {
     const lowCol = w.ammo<=Math.ceil(w.max*0.2) ? '#ffb347' : '#ffe27a';
@@ -2158,7 +2235,10 @@ function frame(now){
       for(const st of G.stations){ if(st.flash>0) st.flash-=dt; if(st.collapse>0) st.collapse-=dt; }
       if(G.fireCooldown>0) G.fireCooldown-=dt;
       if(G.punchCd>0) G.punchCd-=dt;
-      if(G.recharge>0){ G.recharge-=dt; if(G.recharge<0) G.recharge=0; }
+      if(G.recharge>0){ G.recharge-=dt; if(G.recharge<=0){ G.recharge=0;
+        // Burst Charge reload complete — refill magazine
+        if(WEAPONS.burst.ammo<=0) WEAPONS.burst.ammo=WEAPONS.burst.max;
+      }}
       if(G.muzzle>0) G.muzzle-=dt;
       if(G.boss.flash>0) G.boss.flash-=dt;
       for(const sh of G.shots) sh.life-=dt;
