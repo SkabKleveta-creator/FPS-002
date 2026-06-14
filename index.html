@@ -1407,6 +1407,70 @@ function degradeFactor(){
   return Math.min(1, elapsed/90);     // ramps in over ~90s, then holds
 }
 
+/* FPS002-ENV-STORY-001 — environmental storytelling wall detail (DISPLAY ONLY).
+   Draws a small, sparse, deterministic sector-specific mark on a wall column so
+   each sector reads as a real operational space reconstructed from failing
+   memory. Pure rendering: reads only its arguments + G.levelIndex; writes no
+   game state. Called from the wall loop AFTER the slice fill and only for near,
+   tall, non-door walls — and BEFORE any sprite is drawn, so every drone/Station/
+   Gate/Automaton/pickup/prop paints over it. Determinism comes from a coordinate
+   hash (no per-frame randomness). Marks are low-contrast, palette-matched, and
+   carry no glow/pulse/core, so they never read as objectives.
+   Args: col=screen column, mx/my=wall cell, side=wall face, y0/y1=slice top/bot,
+   lineH=slice height, PAL=sector palette, shade=slice shade. */
+function drawWallStoryDetail(col, mx, my, side, y0, y1, lineH, PAL, shade){
+  // deterministic per-cell+column hash → sparse selection (no painted bands)
+  const hash = (((mx*73856093) ^ (my*19349663) ^ (col*83492791) ^ (side*2654435761)) >>> 0);
+  // only ~1 in 6 eligible columns carries a mark → texture, not clutter
+  if((hash % 6) !== 0) return;
+  const sh=Math.max(0.3, shade);
+  const H0=y1-y0;
+  const idx=G.levelIndex|0;
+  // pick a vertical anchor band within the wall slice (upper / mid) from the hash
+  const band = (hash>>3) % 3;            // 0,1,2
+  const markY = (y0 + H0*(0.22 + band*0.20))|0;
+  const fill=(r,g,b,a)=>{ ctx.fillStyle='rgba('+(r*sh|0)+','+(g*sh|0)+','+(b*sh|0)+','+a+')'; };
+
+  if(idx===0){
+    // SECTOR 1 — MAINTENANCE BAY: steel panels, caution stencils, conduit pips.
+    const variant=(hash>>6)%3;
+    if(variant===0){           // small recessed panel (dark outline pip)
+      fill(20,30,40,0.40); ctx.fillRect(col, markY, 1, Math.max(2,(H0*0.10)|0));
+    } else if(variant===1){    // faint caution stencil dash (steel-cyan, low)
+      const [rr,rg,rb]=PAL.route; ctx.fillStyle='rgba('+(rr|0)+','+(rg|0)+','+(rb|0)+',0.16)';
+      ctx.fillRect(col, markY, 1, Math.max(1,(H0*0.04)|0));
+    } else {                   // conduit run marker near the slice mid
+      fill(70,90,110,0.30); ctx.fillRect(col, (y0+H0*0.5)|0, 1, Math.max(1,(H0*0.03)|0));
+    }
+  } else if(idx===1){
+    // SECTOR 2 — STORAGE DECK: bay markings, inventory blocks, lane stubs.
+    // NOTE: wall-mounted only — deliberately NO floor arrows/chevrons so nothing
+    // reads as player guidance.
+    const variant=(hash>>6)%3;
+    if(variant===0){           // storage bay label block (amber, blocky)
+      const [rr,rg,rb]=PAL.route; ctx.fillStyle='rgba('+(rr|0)+','+(rg|0)+','+(rb|0)+',0.18)';
+      ctx.fillRect(col, markY, 1, Math.max(2,(H0*0.08)|0));
+    } else if(variant===1){    // inventory panel pip (dark slot)
+      fill(40,32,18,0.42); ctx.fillRect(col, markY, 1, Math.max(2,(H0*0.09)|0));
+    } else {                   // low bay stripe near the wall base (facility mark)
+      const [rr,rg,rb]=PAL.route; ctx.fillStyle='rgba('+(rr|0)+','+(rg|0)+','+(rb|0)+',0.14)';
+      ctx.fillRect(col, (y1-Math.max(2,(H0*0.06)|0))|0, 1, Math.max(1,(H0*0.03)|0));
+    }
+  } else {
+    // SECTOR 3 — REACTOR / DATA NODE: server labels, data-bus strips, hazard
+    // bands, corrupted seams (hotter, more unstable).
+    const variant=(hash>>6)%3;
+    if(variant===0){           // data-bus strip (cool port column accent)
+      fill(70,90,120,0.34); ctx.fillRect(col, markY, 1, Math.max(2,(H0*0.12)|0));
+    } else if(variant===1){    // reactor hazard band (magenta, low alpha)
+      const [rr,rg,rb]=PAL.route; ctx.fillStyle='rgba('+(rr|0)+','+(rg|0)+','+(rb|0)+',0.16)';
+      ctx.fillRect(col, markY, 1, Math.max(1,(H0*0.05)|0));
+    } else {                   // corrupted diagnostic seam (broken dark/hot pip)
+      fill(150,50,70,0.30); ctx.fillRect(col, (y0+H0*((hash>>9)%5)/6)|0, 1, Math.max(1,(H0*0.025)|0));
+    }
+  }
+}
+
 function render(){
   // ---- ceiling / floor: per-sector reconstructed operational space ----
   // FPS000-VISUAL-002 extends VISUAL-001's depth banding with a per-sector
@@ -1511,6 +1575,14 @@ function render(){
       ctx.fillRect(col,b1|0,1,1); ctx.fillRect(col,b2|0,1,1);
       // floor marking accent: bright pip near the base of nearby walls
       if(perp<3.2 && !isDoor && (col % 6)===0){ ctx.fillStyle='rgba(90,200,180,0.20)'; ctx.fillRect(col,(y1-2)|0,1,2); }
+    }
+    // FPS002-ENV-STORY-001 — display-only environmental storytelling overlay.
+    // Sparse, deterministic, palette-aware wall marks that make each sector read
+    // as a real operational space ("this room had a purpose"). Drawn here, BEFORE
+    // all sprites (which paint over it), and gated to near/tall non-door walls so
+    // it can never hide drones/Stations/Gate/Automaton or clutter distant walls.
+    if(!isDoor && lineH>28 && perp<4.5){
+      drawWallStoryDetail(col, mapX, mapY, side, y0, y1, lineH, PAL, shade);
     }
   }
 
